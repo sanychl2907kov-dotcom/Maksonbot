@@ -22,6 +22,9 @@ AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
 TIMEOUT_DURATION = 1800
 TICKET_LIFETIME = 10800
+FAKE_TICKET_TIMEOUT = 300
+MAX_FAKE_TICKETS = 4
+FAKE_RESET_TIME = 300
 
 TARGET_CHANNEL_ID = 1478741064054603828
 TARGET_USER_IDS = [560386166885580800]
@@ -41,6 +44,46 @@ last_menu_message_id = {}
 ticket_timers = {}
 ticket_stats = {"created": 0, "closed": 0}
 ticket_closed = set()
+ticket_creation_time = {}
+fake_ticket_counter = {}
+fake_ticket_last_time = {}
+
+# ========== СПИСОК ПРАВИЛ ==========
+RULES_DICT = {
+    "1.1": "Настоящие правила обязательны для всех участников тикетов.",
+    "1.2": "Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.",
+    "1.3": "Администрация оставляет за собой право толковать правила в спорных ситуациях.",
+    "2.1": "Запрещены оскорбления, грубость, переход на личности и агрессия в любой форме.",
+    "2.2": "За первое нарушение — **предупреждение**.",
+    "2.3": "За повторное нарушение — **закрытие ветки** без права восстановления.",
+    "3.1": "Запрещён флуд, спам, бессмысленные сообщения, провокации.",
+    "3.2": "За такие сообщения ветка **закрывается сразу**, без предупреждения.",
+    "3.3": "Все сообщения должны быть по делу и содержать полезную информацию.",
+    "4.1": "Указывайте свой ник, суть проблемы и доказательства (скрины, видео, логи).",
+    "4.2": "Если вопрос не относится к техподдержке — ветка будет закрыта.",
+    "4.3": "Запрещено создавать несколько тикетов по одной проблеме.",
+    "5.1": "Ветки являются приватными — в них пишут только автор и **Admins & Security**.",
+    "5.2": "Запрещено передавать содержимое тикетов третьим лицам.",
+    "5.3": "Нарушение конфиденциальности — **закрытие ветки**.",
+    "6.1": "Автор тикета несёт ответственность за достоверность информации.",
+    "6.2": "За ложные жалобы — **закрытие ветки**.",
+    "6.3": "Администрация оставляет за собой право закрыть ветку без объяснения причин.",
+    "6.4": "За создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**.",
+    "6.5": "При 4 таких тикетах подряд — **тайм-аут 5 минут**.",
+    "7.1": "Ответ на тикет даётся в течение **30 минут** (в рабочее время).",
+    "7.2": "Если автор не отвечает в течение **24 часов** — тикет автоматически закрывается.",
+    "7.3": "Автор может запросить продление времени, если нужно больше времени на сбор информации.",
+    "8.1": "Все жалобы должны подтверждаться доказательствами (скриншоты, видео, логи).",
+    "8.2": "Подделка доказательств — **закрытие ветки** (при повторении — **предупреждение**).",
+    "8.3": "Если доказательств нет — жалоба рассматривается, но решение может быть отложено.",
+    "9.1": "Запрещено требовать немедленного ответа или ускорять рассмотрение.",
+    "9.2": "Все вопросы задаются в рамках тикета — личные сообщения администрации **не принимаются**.",
+    "9.3": "Грубость в адрес администрации — **предупреждение**, при повторении — **закрытие ветки**.",
+    "10.1": "Тикет закрывается после решения проблемы или по инициативе автора.",
+    "10.2": "После закрытия ветка **удаляется** — восстановление невозможно.",
+    "10.3": "Автор может повторно открыть тикет только через **новое обращение**.",
+}
+# ==================================
 
 # ========== АНТИКРАШ ==========
 async def handle_error(interaction, error, custom_message=None):
@@ -107,6 +150,124 @@ async def auto_delete_ticket(thread_id, channel_id):
             ticket_closed.add(thread_id)
     except:
         pass
+
+# ========== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРАВИЛ ==========
+async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
+    """Отправляет правила в указанный тред. Если указаны номера — только их."""
+    async for msg in thread.history(limit=20):
+        if msg.author == bot.user:
+            try:
+                await msg.delete()
+            except:
+                pass
+    
+    if rule_numbers:
+        rule_list = [r.strip() for r in rule_numbers.split(",")]
+        found_rules = []
+        not_found = []
+        
+        for r in rule_list:
+            if r in RULES_DICT:
+                found_rules.append(f"**{r}.** {RULES_DICT[r]}")
+            else:
+                not_found.append(r)
+        
+        if not found_rules:
+            embed = discord.Embed(
+                title="❌ Ошибка",
+                description=f"Правила с номерами `{', '.join(not_found)}` не найдены.\nДоступные номера: {', '.join(RULES_DICT.keys())}",
+                color=discord.Color.red()
+            )
+            await thread.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title="📋 **Нарушение правил**",
+            description=f"{user_mention if user_mention else ''}\n\n" + "\n".join(found_rules),
+            color=discord.Color.red()
+        )
+        await thread.send(embed=embed)
+    else:
+        rules_embed = discord.Embed(
+            title="📋 **Правила технической поддержки**",
+            description=(
+                "**1. Общие положения**\n"
+                "1.1. Настоящие правила обязательны для всех участников тикетов.\n"
+                "1.2. Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.\n"
+                "1.3. Администрация оставляет за собой право толковать правила в спорных ситуациях.\n\n"
+
+                "**2. Уважение и этика**\n"
+                "2.1. Запрещены оскорбления, грубость, переход на личности и агрессия в любой форме.\n"
+                "2.2. За первое нарушение — **предупреждение**.\n"
+                "2.3. За повторное нарушение — **закрытие ветки** без права восстановления.\n\n"
+
+                "**3. Адекватность и порядок**\n"
+                "3.1. Запрещён флуд, спам, бессмысленные сообщения, провокации.\n"
+                "3.2. За такие сообщения ветка **закрывается сразу**, без предупреждения.\n"
+                "3.3. Все сообщения должны быть по делу и содержать полезную информацию.\n\n"
+
+                "**4. Формат обращения**\n"
+                "4.1. Указывайте свой ник, суть проблемы и доказательства (скрины, видео, логи).\n"
+                "4.2. Если вопрос не относится к техподдержке — ветка будет закрыта.\n"
+                "4.3. Запрещено создавать несколько тикетов по одной проблеме.\n\n"
+
+                "**5. Конфиденциальность**\n"
+                "5.1. Ветки являются приватными — в них пишут только автор и **Admins & Security**.\n"
+                "5.2. Запрещено передавать содержимое тикетов третьим лицам.\n"
+                "5.3. Нарушение конфиденциальности — **закрытие ветки**.\n\n"
+
+                "**6. Ответственность**\n"
+                "6.1. Автор тикета несёт ответственность за достоверность информации.\n"
+                "6.2. За ложные жалобы — **закрытие ветки**.\n"
+                "6.3. Администрация оставляет за собой право закрыть ветку без объяснения причин.\n"
+                "6.4. За создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**.\n"
+                "6.5. При 4 таких тикетах подряд — **тайм-аут 5 минут**.\n\n"
+
+                "**7. Сроки и ожидание**\n"
+                "7.1. Ответ на тикет даётся в течение **30 минут** (в рабочее время).\n"
+                "7.2. Если автор не отвечает в течение **24 часов** — тикет автоматически закрывается.\n"
+                "7.3. Автор может запросить продление времени, если нужно больше времени на сбор информации.\n\n"
+
+                "**8. Доказательства и факты**\n"
+                "8.1. Все жалобы должны подтверждаться доказательствами (скриншоты, видео, логи).\n"
+                "8.2. Подделка доказательств — **закрытие ветки** (при повторении — **предупреждение**).\n"
+                "8.3. Если доказательств нет — жалоба рассматривается, но решение может быть отложено.\n\n"
+
+                "**9. Коммуникация с администрацией**\n"
+                "9.1. Запрещено требовать немедленного ответа или ускорять рассмотрение.\n"
+                "9.2. Все вопросы задаются в рамках тикета — личные сообщения администрации **не принимаются**.\n"
+                "9.3. Грубость в адрес администрации — **предупреждение**, при повторении — **закрытие ветки**.\n\n"
+
+                "**10. Закрытие тикета**\n"
+                "10.1. Тикет закрывается после решения проблемы или по инициативе автора.\n"
+                "10.2. После закрытия ветка **удаляется** — восстановление невозможно.\n"
+                "10.3. Автор может повторно открыть тикет только через **новое обращение**.\n\n"
+
+                "---\n"
+                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
+            ),
+            color=discord.Color.gold()
+        )
+
+        suggestion_rules_embed = discord.Embed(
+            title="💡 **Правила для предложений**",
+            description=(
+                "1.1. Предложения должны быть чёткими и по делу.\n"
+                "1.2. Запрещены оскорбления, флуд и спам.\n"
+                "1.3. За нарушение — ветка закрывается без предупреждения.\n"
+                "1.4. Администрация рассматривает все предложения, но не обязана их реализовывать.\n"
+                "1.5. За создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**.\n"
+                "1.6. При 4 таких тикетах подряд — **тайм-аут 5 минут**.\n\n"
+                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
+            ),
+            color=discord.Color.gold()
+        )
+
+        await thread.send(embed=rules_embed)
+        await thread.send(embed=suggestion_rules_embed)
+        await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
+    
+    print(f"✅ Правила отправлены в ветку {thread.name}")
 
 @bot.event
 async def on_ready():
@@ -212,11 +373,35 @@ class CloseButton(Button):
                 await interaction.followup.send("❌ Не ваш тикет", ephemeral=True)
                 return
 
+            # Проверяем, кто закрывает тикет — автор или модератор
+            if interaction.user.id == author_id:
+                # Автор закрывает — проверяем на фальшивый тикет
+                creation_time = ticket_creation_time.get(interaction.channel.id)
+                if creation_time and (time.time() - creation_time) < 10:
+                    user_id = author_id
+                    last_time = fake_ticket_last_time.get(user_id, 0)
+                    if time.time() - last_time > FAKE_RESET_TIME:
+                        fake_ticket_counter[user_id] = 0
+                    
+                    fake_ticket_counter[user_id] = fake_ticket_counter.get(user_id, 0) + 1
+                    fake_ticket_last_time[user_id] = time.time()
+                    
+                    if fake_ticket_counter[user_id] >= MAX_FAKE_TICKETS:
+                        member = interaction.guild.get_member(user_id)
+                        if member:
+                            await member.timeout(discord.utils.utcnow() + discord.timedelta(seconds=FAKE_TICKET_TIMEOUT))
+                            await interaction.followup.send(f"⏰ {member.mention} получил тайм-аут {FAKE_TICKET_TIMEOUT//60} минут за создание и закрытие {MAX_FAKE_TICKETS} фальшивых тикетов подряд.")
+                            fake_ticket_counter[user_id] = 0
+                    else:
+                        remaining = MAX_FAKE_TICKETS - fake_ticket_counter[user_id]
+                        await interaction.followup.send(f"⚠️ {interaction.user.mention} вы создали и закрыли тикет слишком быстро. Нарушение {fake_ticket_counter[user_id]} из {MAX_FAKE_TICKETS}. При достижении {MAX_FAKE_TICKETS} — тайм-аут {FAKE_TICKET_TIMEOUT//60} минут.")
+
             ticket_closed.add(interaction.channel.id)
             await interaction.followup.send("✅ Тикет закрывается...")
             
             ticket_owners.pop(interaction.channel.id, None)
             ticket_stats["closed"] += 1
+            ticket_creation_time.pop(interaction.channel.id, None)
 
             if interaction.channel.id in ticket_timers:
                 ticket_timers[interaction.channel.id].cancel()
@@ -280,16 +465,13 @@ class RulesButton(Button):
 
         channel = interaction.channel
 
-        # Проверяем, существует ли уже ветка
         for thread in channel.threads:
             if thread.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = thread.id
-                await interaction.followup.send(f"✅ Ветка с правилами уже существует: {thread.mention}")
+                await send_rules_to_thread(thread)
+                await interaction.followup.send(f"✅ Правила обновлены в ветке: {thread.mention}")
                 return
 
-        print("📝 Создаю приватную ветку с правилами...")
-
-        # Создаём ПРИВАТНУЮ ветку
         thread = await channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
@@ -297,81 +479,12 @@ class RulesButton(Button):
         )
 
         RULES_THREAD_ID = thread.id
-        print(f"✅ Приватная ветка создана: {thread.name} (ID: {thread.id})")
 
-        # Добавляем тебя в ветку
         await thread.add_user(interaction.user)
-        print(f"👤 Добавлен {interaction.user.name} в ветку")
 
-        # Небольшая задержка, чтобы Discord успел обработать создание
         await asyncio.sleep(1)
 
-        # ======== ПРАВИЛА ДЛЯ ТИКЕТОВ ========
-        rules_embed = discord.Embed(
-            title="📋 **Правила технической поддержки**",
-            description=(
-                "**1. Общие положения**\n"
-                "1.1. Настоящие правила обязательны для всех участников тикетов.\n"
-                "1.2. Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.\n"
-                "1.3. Администрация оставляет за собой право толковать правила в спорных ситуациях.\n\n"
-
-                "**2. Уважение и этика**\n"
-                "2.1. Запрещены оскорбления, грубость, переход на личности и агрессия в любой форме.\n"
-                "2.2. За первое нарушение — **предупреждение**.\n"
-                "2.3. За повторное нарушение — **закрытие ветки** без права восстановления.\n\n"
-
-                "**3. Адекватность и порядок**\n"
-                "3.1. Запрещён флуд, спам, бессмысленные сообщения, провокации.\n"
-                "3.2. За такие сообщения ветка **закрывается сразу**, без предупреждения.\n"
-                "3.3. Все сообщения должны быть по делу и содержать полезную информацию.\n\n"
-
-                "**4. Формат обращения**\n"
-                "4.1. Указывайте свой ник, суть проблемы и доказательства (скрины, видео, логи).\n"
-                "4.2. Если вопрос не относится к техподдержке — ветка будет закрыта.\n"
-                "4.3. Запрещено создавать несколько тикетов по одной проблеме.\n\n"
-
-                "**5. Конфиденциальность**\n"
-                "5.1. Ветки являются приватными — в них пишут только автор и **Admins & Security**.\n"
-                "5.2. Запрещено передавать содержимое тикетов третьим лицам.\n"
-                "5.3. Нарушение конфиденциальности — **закрытие ветки**.\n\n"
-
-                "**6. Ответственность**\n"
-                "6.1. Автор тикета несёт ответственность за достоверность информации.\n"
-                "6.2. За ложные жалобы — **закрытие ветки**.\n"
-                "6.3. Администрация оставляет за собой право закрыть ветку без объяснения причин.\n\n"
-
-                "---\n"
-                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
-            ),
-            color=discord.Color.gold()
-        )
-
-        # ======== ПРАВИЛА ДЛЯ ПРЕДЛОЖЕНИЙ ========
-        suggestion_rules_embed = discord.Embed(
-            title="💡 **Правила для предложений**",
-            description=(
-                "1.1. Предложения должны быть чёткими и по делу.\n"
-                "1.2. Запрещены оскорбления, флуд и спам.\n"
-                "1.3. За нарушение — ветка закрывается без предупреждения.\n"
-                "1.4. Администрация рассматривает все предложения, но не обязана их реализовывать.\n\n"
-                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
-            ),
-            color=discord.Color.gold()
-        )
-
-        # Отправляем правила
-        try:
-            await thread.send(embed=rules_embed)
-            print("📨 Отправлены правила для тикетов")
-            await thread.send(embed=suggestion_rules_embed)
-            print("📨 Отправлены правила для предложений")
-            await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
-            print("✅ Все правила успешно отправлены в ветку")
-        except Exception as e:
-            print(f"❌ Ошибка при отправке правил: {e}")
-            await interaction.followup.send(f"❌ Ошибка при отправке правил: {e}", ephemeral=True)
-            return
-
+        await send_rules_to_thread(thread)
         await interaction.followup.send(f"✅ Приватная ветка с правилами создана: {thread.mention}")
 
 class TicketView(View):
@@ -447,6 +560,7 @@ class TicketView(View):
                     pass
 
             ticket_owners[thread.id] = interaction.user.id
+            ticket_creation_time[thread.id] = time.time()
             ticket_stats["created"] += 1
 
             task = asyncio.create_task(auto_delete_ticket(thread.id, interaction.channel.id))
@@ -507,8 +621,158 @@ async def my_tickets(ctx):
 
     await ctx.send(f"📋 Ваши тикеты:\n{', '.join(user_tickets) if user_tickets else 'Нет активных тикетов'}")
 
+# ========== КОМАНДА /timeout ==========
+@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
+async def timeout_slash(
+    interaction: discord.Interaction,
+    пользователь: discord.Member,
+    время: int,
+    причина: str = "Нарушение правил поддержки"
+):
+    """Выдаёт тайм-аут пользователю."""
+    # Проверка: только в канале поддержки
+    if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+        return
+
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
+        return
+
+    # Проверка прав
+    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
+    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
+        return
+
+    if пользователь == bot.user:
+        await interaction.response.send_message("❌ Нельзя выдать тайм-аут боту", ephemeral=True)
+        return
+
+    if пользователь == interaction.user:
+        await interaction.response.send_message("❌ Нельзя выдать тайм-аут самому себе", ephemeral=True)
+        return
+
+    if время > 40320:
+        await interaction.response.send_message("❌ Максимальное время — 40320 минут (28 дней).", ephemeral=True)
+        return
+    if время < 1:
+        await interaction.response.send_message("❌ Минимальное время — 1 минута.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        await пользователь.timeout(
+            discord.utils.utcnow() + discord.timedelta(minutes=время),
+            reason=причина
+        )
+
+        embed = discord.Embed(
+            title="⏰ **Тайм-аут выдан**",
+            description=(
+                f"👤 **Пользователь:** {пользователь.mention}\n"
+                f"🕒 **Время:** {время} минут\n"
+                f"📝 **Причина:** {причина}\n"
+                f"👮 **Выдал:** {interaction.user.mention}"
+            ),
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
+
+        # Логирование в консоль
+        print(f"⏰ {interaction.user} выдал тайм-аут {пользователь} на {время} минут. Причина: {причина}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка при выдаче тайм-аута: {e}", ephemeral=True)
+
+# ========== КОМАНДА /send_rules ==========
+@bot.tree.command(name="send_rules", description="Отправить правила в текущую ветку (доступно модераторам и админам)")
+async def send_rules_slash(
+    interaction: discord.Interaction,
+    правило: str = None,
+    пользователь: discord.Member = None
+):
+    """Отправляет правила в текущую ветку."""
+    # Проверка: только в канале поддержки
+    if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+        return
+
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
+        return
+
+    # Проверка прав — доступно только ролям из SUPPORT_ROLE_IDS и тебе
+    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
+    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("❌ У вас нет доступа к этой команде", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    # Проверяем, что команда вызвана в ветке
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.followup.send("❌ Эта команда работает только внутри ветки (тикета или правил).", ephemeral=True)
+        return
+
+    if правило:
+        rules_list = [r.strip() for r in правило.split(",")]
+        found = []
+        not_found = []
+        for r in rules_list:
+            if r in RULES_DICT:
+                found.append(r)
+            else:
+                not_found.append(r)
+        
+        if not found:
+            embed = discord.Embed(
+                title="❌ Ошибка",
+                description=f"Правила с номерами `{', '.join(not_found)}` не найдены.\nДоступные номера: {', '.join(RULES_DICT.keys())}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        user_mention = f"{пользователь.mention}" if пользователь else ""
+        await send_rules_to_thread(interaction.channel, ",".join(found), user_mention)
+        await interaction.followup.send(f"✅ Правила отправлены в текущую ветку: {interaction.channel.mention}")
+    else:
+        if interaction.channel.name == "📋-правила-поддержки":
+            global RULES_THREAD_ID
+            RULES_THREAD_ID = interaction.channel.id
+            await send_rules_to_thread(interaction.channel)
+            await interaction.followup.send(f"✅ Правила обновлены в текущей ветке: {interaction.channel.mention}")
+        else:
+            support_channel = interaction.channel.parent
+            if support_channel and support_channel.id in SUPPORT_CHANNEL_IDS:
+                rules_thread = None
+                for thread in support_channel.threads:
+                    if thread.name == "📋-правила-поддержки":
+                        rules_thread = thread
+                        break
+
+                if rules_thread:
+                    await send_rules_to_thread(rules_thread)
+                    await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {rules_thread.mention}")
+                else:
+                    rules_thread = await support_channel.create_thread(
+                        name="📋-правила-поддержки",
+                        auto_archive_duration=10080,
+                        type=discord.ChannelType.private_thread
+                    )
+                    RULES_THREAD_ID = rules_thread.id
+                    await rules_thread.add_user(interaction.user)
+                    await asyncio.sleep(1)
+                    await send_rules_to_thread(rules_thread)
+                    await interaction.followup.send(f"✅ Создана новая ветка с правилами: {rules_thread.mention}")
+            else:
+                await interaction.followup.send("❌ Не удалось определить канал поддержки.", ephemeral=True)
+
+# ========== КОМАНДА /setup_tickets ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets_slash(interaction: discord.Interaction):
+    # Проверка: только в канале поддержки
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
