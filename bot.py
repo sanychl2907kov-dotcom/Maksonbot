@@ -118,7 +118,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # Проверяем, нужно ли ставить реакцию ДО проверки на бота
     should_add_emoji = False
     if message.channel.id == TARGET_CHANNEL_ID:
         should_add_emoji = True
@@ -136,11 +135,9 @@ async def on_message(message):
         except:
             pass
 
-    # Теперь проверяем, не бот ли это (чтобы не обрабатывать команды от ботов)
     if message.author.bot:
         return
 
-    # Остальная логика (ответы на упоминания и т.д.)
     if bot.user in message.mentions:
         content = message.content.lower()
         if "как создать тикет" in content:
@@ -271,11 +268,15 @@ class RulesButton(Button):
         global RULES_THREAD_ID
 
         channel = interaction.channel
+
+        # Проверяем, существует ли уже ветка
         for thread in channel.threads:
-            if thread.id == RULES_THREAD_ID:
+            if thread.name == "📋-правила-поддержки":
+                RULES_THREAD_ID = thread.id
                 await interaction.followup.send(f"✅ Ветка с правилами уже существует: {thread.mention}")
                 return
 
+        # Создаём ветку
         thread = await channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
@@ -283,10 +284,12 @@ class RulesButton(Button):
         )
 
         RULES_THREAD_ID = thread.id
+        print(f"✅ Ветка создана: {thread.name} (ID: {thread.id})")
 
         await thread.edit(archived=False, locked=False)
         await thread.add_user(interaction.user)
 
+        # Настройка прав
         overwrite = discord.PermissionOverwrite()
         overwrite.send_messages = False
         overwrite.read_message_history = True
@@ -352,9 +355,12 @@ class RulesButton(Button):
             color=discord.Color.gold()
         )
 
+        # Отправляем правила
         await thread.send(embed=rules_embed)
         await thread.send(embed=suggestion_rules_embed)
         await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
+        
+        print(f"✅ Правила отправлены в ветку {thread.name}")
         await interaction.followup.send(f"✅ Ветка с правилами создана: {thread.mention}")
 
 class TicketView(View):
@@ -508,10 +514,8 @@ async def setup_tickets_slash(interaction: discord.Interaction):
         except:
             pass
 
-    # Создаём меню с кнопками
     view = TicketView(interaction.user.id)
     
-    # Если пользователь — владелец, добавляем кнопку "Правила"
     if interaction.user.id == AUTHORIZED_USER_ID:
         view.add_item(RulesButton())
 
