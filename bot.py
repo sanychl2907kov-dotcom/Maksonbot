@@ -80,6 +80,16 @@ RULES_DICT = {
     "10.3": "Автор может повторно открыть тикет только через **новое обращение**.",
 }
 
+# ========== ФУНКЦИЯ ПРОВЕРКИ КАНАЛА ==========
+def is_support_channel(channel):
+    """Проверяет, является ли канал или его родитель каналом поддержки"""
+    if channel.id in SUPPORT_CHANNEL_IDS:
+        return True
+    if isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS:
+        return True
+    return False
+# =============================================
+
 # ========== АНТИКРАШ ==========
 async def handle_error(interaction, error, custom_message=None):
     try:
@@ -258,7 +268,6 @@ async def on_ready():
     print(f"✅ Бот {bot.user} запущен")
     print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
     
-    # Синхронизация слеш-команд
     try:
         synced = await bot.tree.sync()
         print(f"✅ Синхронизировано {len(synced)} слеш-команд")
@@ -496,7 +505,7 @@ class TicketView(View):
         try:
             await interaction.response.defer(ephemeral=True)
 
-            if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+            if not is_support_channel(interaction.channel):
                 await interaction.followup.send("❌ Эта команда работает только в канале поддержки", ephemeral=True)
                 return
 
@@ -598,7 +607,7 @@ class TicketView(View):
 
 @bot.command(name="my_tickets")
 async def my_tickets(ctx):
-    if ctx.channel.id not in SUPPORT_CHANNEL_IDS:
+    if not is_support_channel(ctx.channel):
         await ctx.send("❌ Этот канал не для тикетов")
         return
 
@@ -617,7 +626,7 @@ async def timeout_slash(
     время: int,
     причина: str = "Нарушение правил поддержки"
 ):
-    if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+    if not is_support_channel(interaction.channel):
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
 
@@ -676,7 +685,7 @@ async def send_rules_slash(
     правило: str = None,
     пользователь: discord.Member = None
 ):
-    if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+    if not is_support_channel(interaction.channel):
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
 
@@ -723,7 +732,7 @@ async def send_rules_slash(
             await interaction.followup.send(f"✅ Правила обновлены в текущей ветке: {interaction.channel.mention}")
         else:
             support_channel = interaction.channel.parent
-            if support_channel and support_channel.id in SUPPORT_CHANNEL_IDS:
+            if support_channel and is_support_channel(support_channel):
                 rules_thread = None
                 for thread in support_channel.threads:
                     if thread.name == "📋-правила-поддержки":
@@ -749,7 +758,7 @@ async def send_rules_slash(
 # ========== КОМАНДА /setup_tickets ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets_slash(interaction: discord.Interaction):
-    if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
+    if not is_support_channel(interaction.channel):
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
 
