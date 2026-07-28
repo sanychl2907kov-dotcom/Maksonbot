@@ -4,8 +4,14 @@ from discord.ui import View, Button
 import time
 import random
 import asyncio
+import os
+from dotenv import load_dotenv
 
-TOKEN = "MTUyOTUyOTIyMzg3Njk2ODY4OQ.GOlGY5.qH2ysN3BD2NCqRoy6GbsGonVIRceKsl1afuLZ8"  # Срочно замени!
+load_dotenv()
+TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise ValueError("Токен не найден в переменных окружения")
 
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
@@ -28,7 +34,6 @@ ticket_owners = {}
 last_menu_message_id = None
 ticket_timers = {}
 ticket_stats = {"created": 0, "closed": 0}
-# Флаг для предотвращения двойного удаления
 ticket_closed = set()
 
 def is_support_channel():
@@ -38,7 +43,6 @@ def is_support_channel():
 
 async def auto_delete_ticket(thread_id, channel_id):
     await asyncio.sleep(TICKET_LIFETIME)
-    # Проверяем, не закрыт ли уже тикет
     if thread_id in ticket_closed:
         return
     try:
@@ -54,10 +58,6 @@ async def auto_delete_ticket(thread_id, channel_id):
             ticket_closed.add(thread_id)
     except:
         pass
-
-# ============================================
-#  ОБРАБОТКА СООБЩЕНИЙ
-# ============================================
 
 @bot.event
 async def on_message(message):
@@ -129,10 +129,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ============================================
-#  КНОПКИ
-# ============================================
-
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
@@ -154,7 +150,6 @@ class CloseButton(Button):
             await interaction.followup.send("❌ Не ваш тикет", ephemeral=True)
             return
 
-        # Помечаем как закрытый
         ticket_closed.add(interaction.channel.id)
 
         await interaction.followup.send("✅ Тикет закрыт")
@@ -199,10 +194,6 @@ class TimeoutButton(Button):
         await author.timeout(discord.utils.utcnow() + discord.timedelta(seconds=TIMEOUT_DURATION))
         await interaction.followup.send(f"⏰ {author.mention} получил тайм-аут 30 мин")
 
-# ============================================
-#  МЕНЮ
-# ============================================
-
 class TicketView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -226,7 +217,6 @@ class TicketView(View):
             await interaction.followup.send("❌ Нет прав на создание тредов", ephemeral=True)
             return
 
-        # Проверяем лимит по ID пользователя
         user_tickets = 0
         for t in interaction.channel.threads:
             if t.name.endswith(f"-{interaction.user.id}") or f"-{interaction.user.id}-" in t.name:
@@ -236,7 +226,6 @@ class TicketView(View):
             return
 
         thread_name = f"тикет-{interaction.user.name}-{interaction.user.id}-{ticket_type}"
-        # Проверяем уникальность имени
         if any(t.name == thread_name for t in interaction.channel.threads):
             await interaction.followup.send("❌ Уже есть активный тикет с таким именем", ephemeral=True)
             return
@@ -260,7 +249,6 @@ class TicketView(View):
                         except:
                             pass
 
-            # Если тикет с таким ID уже был, удаляем старую запись (на всякий случай)
             ticket_owners.pop(thread.id, None)
             ticket_owners[thread.id] = interaction.user.id
             ticket_stats["created"] += 1
@@ -314,10 +302,6 @@ class TicketView(View):
             await interaction.followup.send("❌ Недостаточно прав для создания тикета", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ============================================
-#  КОМАНДЫ
-# ============================================
 
 @bot.command(name="my_tickets")
 async def my_tickets(ctx):
@@ -399,7 +383,6 @@ async def setup_tickets_error(ctx, error):
 
 @bot.event
 async def on_ready():
-    # Синхронизация только один раз, без спама
     try:
         synced = await bot.tree.sync()
         print(f"✅ Синхронизировано {len(synced)} слеш-команд")
