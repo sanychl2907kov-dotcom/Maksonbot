@@ -5,6 +5,8 @@ import time
 import random
 import asyncio
 import os
+import signal
+import sys
 from dotenv import load_dotenv
 from flask import Flask
 import threading
@@ -26,6 +28,7 @@ TARGET_USER_IDS = [560386166885580800]
 TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
 
 RULES_THREAD_ID = None
+SHUTDOWN_DELAY = 60
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -64,6 +67,14 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     await ctx.send(f"⚠️ Ошибка: {str(error)[:100]}")
+
+# ========== ПЛАВНОЕ ЗАВЕРШЕНИЕ ==========
+def graceful_shutdown(signum, frame):
+    print(f"🛑 Получен сигнал остановки. Бот продолжит работу {SHUTDOWN_DELAY} секунд...")
+    threading.Timer(SHUTDOWN_DELAY, lambda: os._exit(0)).start()
+
+signal.signal(signal.SIGTERM, graceful_shutdown)
+# =====================================
 
 # ========== Flask-заглушка ==========
 app = Flask('')
@@ -276,31 +287,24 @@ class RulesButton(Button):
                 await interaction.followup.send(f"✅ Ветка с правилами уже существует: {thread.mention}")
                 return
 
-        # Создаём ветку
+        print("📝 Создаю приватную ветку с правилами...")
+
+        # Создаём ПРИВАТНУЮ ветку
         thread = await channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
-            type=discord.ChannelType.public_thread
+            type=discord.ChannelType.private_thread
         )
 
         RULES_THREAD_ID = thread.id
-        print(f"✅ Ветка создана: {thread.name} (ID: {thread.id})")
+        print(f"✅ Приватная ветка создана: {thread.name} (ID: {thread.id})")
 
-        await thread.edit(archived=False, locked=False)
+        # Добавляем тебя в ветку
         await thread.add_user(interaction.user)
+        print(f"👤 Добавлен {interaction.user.name} в ветку")
 
-        # Настройка прав
-        overwrite = discord.PermissionOverwrite()
-        overwrite.send_messages = False
-        overwrite.read_message_history = True
-        overwrite.view_channel = True
-        await thread.edit(overwrites={interaction.guild.default_role: overwrite})
-
-        overwrite_owner = discord.PermissionOverwrite()
-        overwrite_owner.send_messages = True
-        overwrite_owner.read_message_history = True
-        overwrite_owner.view_channel = True
-        await thread.edit(overwrites={interaction.user: overwrite_owner})
+        # Небольшая задержка, чтобы Discord успел обработать создание
+        await asyncio.sleep(1)
 
         # ======== ПРАВИЛА ДЛЯ ТИКЕТОВ ========
         rules_embed = discord.Embed(
@@ -356,12 +360,19 @@ class RulesButton(Button):
         )
 
         # Отправляем правила
-        await thread.send(embed=rules_embed)
-        await thread.send(embed=suggestion_rules_embed)
-        await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
-        
-        print(f"✅ Правила отправлены в ветку {thread.name}")
-        await interaction.followup.send(f"✅ Ветка с правилами создана: {thread.mention}")
+        try:
+            await thread.send(embed=rules_embed)
+            print("📨 Отправлены правила для тикетов")
+            await thread.send(embed=suggestion_rules_embed)
+            print("📨 Отправлены правила для предложений")
+            await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
+            print("✅ Все правила успешно отправлены в ветку")
+        except Exception as e:
+            print(f"❌ Ошибка при отправке правил: {e}")
+            await interaction.followup.send(f"❌ Ошибка при отправке правил: {e}", ephemeral=True)
+            return
+
+        await interaction.followup.send(f"✅ Приватная ветка с правилами создана: {thread.mention}")
 
 class TicketView(View):
     def __init__(self, user_id):
