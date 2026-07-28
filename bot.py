@@ -275,6 +275,15 @@ async def on_ready():
     print(f"✅ Бот {bot.user} запущен")
     print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
     
+    # Принудительная синхронизация слеш-команд
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Синхронизировано {len(synced)} слеш-команд")
+        for cmd in synced:
+            print(f"   /{cmd.name}")
+    except Exception as e:
+        print(f"❌ Ошибка синхронизации: {e}")
+    
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -630,7 +639,6 @@ async def timeout_slash(
     причина: str = "Нарушение правил поддержки"
 ):
     """Выдаёт тайм-аут пользователю."""
-    # Проверка: только в канале поддержки
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
@@ -639,7 +647,6 @@ async def timeout_slash(
         await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
         return
 
-    # Проверка прав
     is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
     if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
@@ -680,7 +687,6 @@ async def timeout_slash(
         )
         await interaction.followup.send(embed=embed)
 
-        # Логирование в консоль
         print(f"⏰ {interaction.user} выдал тайм-аут {пользователь} на {время} минут. Причина: {причина}")
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка при выдаче тайм-аута: {e}", ephemeral=True)
@@ -693,7 +699,6 @@ async def send_rules_slash(
     пользователь: discord.Member = None
 ):
     """Отправляет правила в текущую ветку."""
-    # Проверка: только в канале поддержки
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
@@ -702,7 +707,6 @@ async def send_rules_slash(
         await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
         return
 
-    # Проверка прав — доступно только ролям из SUPPORT_ROLE_IDS и тебе
     is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
     if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID:
         await interaction.response.send_message("❌ У вас нет доступа к этой команде", ephemeral=True)
@@ -710,7 +714,6 @@ async def send_rules_slash(
 
     await interaction.response.defer(ephemeral=False)
 
-    # Проверяем, что команда вызвана в ветке
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.followup.send("❌ Эта команда работает только внутри ветки (тикета или правил).", ephemeral=True)
         return
