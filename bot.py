@@ -275,7 +275,7 @@ async def on_ready():
     print(f"✅ Бот {bot.user} запущен")
     print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
     
-    # Принудительная синхронизация слеш-команд
+    # Принудительная синхронизация
     try:
         synced = await bot.tree.sync()
         print(f"✅ Синхронизировано {len(synced)} слеш-команд")
@@ -630,6 +630,26 @@ async def my_tickets(ctx):
 
     await ctx.send(f"📋 Ваши тикеты:\n{', '.join(user_tickets) if user_tickets else 'Нет активных тикетов'}")
 
+# ========== КОМАНДА !sync ==========
+@bot.command(name="sync")
+async def sync_commands(ctx):
+    """Принудительная синхронизация слеш-команд (доступно только владельцу)"""
+    if ctx.author.id != AUTHORIZED_USER_ID:
+        await ctx.send("❌ Нет доступа")
+        return
+    
+    if ctx.channel.id not in SUPPORT_CHANNEL_IDS:
+        await ctx.send("❌ Эта команда работает только в канале поддержки")
+        return
+
+    await ctx.send("🔄 Синхронизация слеш-команд...")
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"✅ Синхронизировано {len(synced)} слеш-команд:\n" + "\n".join([f"  /{cmd.name}" for cmd in synced]))
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка синхронизации: {e}")
+# ====================================
+
 # ========== КОМАНДА /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
 async def timeout_slash(
@@ -775,7 +795,6 @@ async def send_rules_slash(
 # ========== КОМАНДА /setup_tickets ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets_slash(interaction: discord.Interaction):
-    # Проверка: только в канале поддержки
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
