@@ -5,8 +5,6 @@ import time
 import random
 import asyncio
 import os
-import signal
-import sys
 from dotenv import load_dotenv
 from flask import Flask
 import threading
@@ -31,7 +29,6 @@ TARGET_USER_IDS = [560386166885580800]
 TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
 
 RULES_THREAD_ID = None
-SHUTDOWN_DELAY = 60
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -48,7 +45,6 @@ ticket_creation_time = {}
 fake_ticket_counter = {}
 fake_ticket_last_time = {}
 
-# ========== СПИСОК ПРАВИЛ ==========
 RULES_DICT = {
     "1.1": "Настоящие правила обязательны для всех участников тикетов.",
     "1.2": "Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.",
@@ -83,7 +79,6 @@ RULES_DICT = {
     "10.2": "После закрытия ветка **удаляется** — восстановление невозможно.",
     "10.3": "Автор может повторно открыть тикет только через **новое обращение**.",
 }
-# ==================================
 
 # ========== АНТИКРАШ ==========
 async def handle_error(interaction, error, custom_message=None):
@@ -110,14 +105,6 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     await ctx.send(f"⚠️ Ошибка: {str(error)[:100]}")
-
-# ========== ПЛАВНОЕ ЗАВЕРШЕНИЕ ==========
-def graceful_shutdown(signum, frame):
-    print(f"🛑 Получен сигнал остановки. Бот продолжит работу {SHUTDOWN_DELAY} секунд...")
-    threading.Timer(SHUTDOWN_DELAY, lambda: os._exit(0)).start()
-
-signal.signal(signal.SIGTERM, graceful_shutdown)
-# =====================================
 
 # ========== Flask-заглушка ==========
 app = Flask('')
@@ -153,7 +140,6 @@ async def auto_delete_ticket(thread_id, channel_id):
 
 # ========== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРАВИЛ ==========
 async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
-    """Отправляет правила в указанный тред. Если указаны номера — только их."""
     async for msg in thread.history(limit=20):
         if msg.author == bot.user:
             try:
@@ -165,13 +151,11 @@ async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
         rule_list = [r.strip() for r in rule_numbers.split(",")]
         found_rules = []
         not_found = []
-        
         for r in rule_list:
             if r in RULES_DICT:
                 found_rules.append(f"**{r}.** {RULES_DICT[r]}")
             else:
                 not_found.append(r)
-        
         if not found_rules:
             embed = discord.Embed(
                 title="❌ Ошибка",
@@ -180,7 +164,6 @@ async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
             )
             await thread.send(embed=embed)
             return
-        
         embed = discord.Embed(
             title="📋 **Нарушение правил**",
             description=f"{user_mention if user_mention else ''}\n\n" + "\n".join(found_rules),
@@ -275,7 +258,7 @@ async def on_ready():
     print(f"✅ Бот {bot.user} запущен")
     print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
     
-    # Принудительная синхронизация
+    # Синхронизация слеш-команд
     try:
         synced = await bot.tree.sync()
         print(f"✅ Синхронизировано {len(synced)} слеш-команд")
@@ -283,7 +266,7 @@ async def on_ready():
             print(f"   /{cmd.name}")
     except Exception as e:
         print(f"❌ Ошибка синхронизации: {e}")
-    
+
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -382,19 +365,15 @@ class CloseButton(Button):
                 await interaction.followup.send("❌ Не ваш тикет", ephemeral=True)
                 return
 
-            # Проверяем, кто закрывает тикет — автор или модератор
             if interaction.user.id == author_id:
-                # Автор закрывает — проверяем на фальшивый тикет
                 creation_time = ticket_creation_time.get(interaction.channel.id)
                 if creation_time and (time.time() - creation_time) < 10:
                     user_id = author_id
                     last_time = fake_ticket_last_time.get(user_id, 0)
                     if time.time() - last_time > FAKE_RESET_TIME:
                         fake_ticket_counter[user_id] = 0
-                    
                     fake_ticket_counter[user_id] = fake_ticket_counter.get(user_id, 0) + 1
                     fake_ticket_last_time[user_id] = time.time()
-                    
                     if fake_ticket_counter[user_id] >= MAX_FAKE_TICKETS:
                         member = interaction.guild.get_member(user_id)
                         if member:
@@ -630,26 +609,6 @@ async def my_tickets(ctx):
 
     await ctx.send(f"📋 Ваши тикеты:\n{', '.join(user_tickets) if user_tickets else 'Нет активных тикетов'}")
 
-# ========== КОМАНДА !sync ==========
-@bot.command(name="sync")
-async def sync_commands(ctx):
-    """Принудительная синхронизация слеш-команд (доступно только владельцу)"""
-    if ctx.author.id != AUTHORIZED_USER_ID:
-        await ctx.send("❌ Нет доступа")
-        return
-    
-    if ctx.channel.id not in SUPPORT_CHANNEL_IDS:
-        await ctx.send("❌ Эта команда работает только в канале поддержки")
-        return
-
-    await ctx.send("🔄 Синхронизация слеш-команд...")
-    try:
-        synced = await bot.tree.sync()
-        await ctx.send(f"✅ Синхронизировано {len(synced)} слеш-команд:\n" + "\n".join([f"  /{cmd.name}" for cmd in synced]))
-    except Exception as e:
-        await ctx.send(f"❌ Ошибка синхронизации: {e}")
-# ====================================
-
 # ========== КОМАНДА /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
 async def timeout_slash(
@@ -658,7 +617,6 @@ async def timeout_slash(
     время: int,
     причина: str = "Нарушение правил поддержки"
 ):
-    """Выдаёт тайм-аут пользователю."""
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
@@ -718,7 +676,6 @@ async def send_rules_slash(
     правило: str = None,
     пользователь: discord.Member = None
 ):
-    """Отправляет правила в текущую ветку."""
     if interaction.channel.id not in SUPPORT_CHANNEL_IDS:
         await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
@@ -747,7 +704,6 @@ async def send_rules_slash(
                 found.append(r)
             else:
                 not_found.append(r)
-        
         if not found:
             embed = discord.Embed(
                 title="❌ Ошибка",
@@ -756,7 +712,6 @@ async def send_rules_slash(
             )
             await interaction.followup.send(embed=embed)
             return
-        
         user_mention = f"{пользователь.mention}" if пользователь else ""
         await send_rules_to_thread(interaction.channel, ",".join(found), user_mention)
         await interaction.followup.send(f"✅ Правила отправлены в текущую ветку: {interaction.channel.mention}")
@@ -774,7 +729,6 @@ async def send_rules_slash(
                     if thread.name == "📋-правила-поддержки":
                         rules_thread = thread
                         break
-
                 if rules_thread:
                     await send_rules_to_thread(rules_thread)
                     await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {rules_thread.mention}")
