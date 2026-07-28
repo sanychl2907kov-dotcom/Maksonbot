@@ -16,8 +16,7 @@ if not TOKEN:
 
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
-AUTHORIZED_USER_ID = 1495071540927266841   # твой ID
-YOUR_ROLE_ID = 1495071540927266841         # твой ID
+AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
 TIMEOUT_DURATION = 1800
 TICKET_LIFETIME = 10800
@@ -25,6 +24,8 @@ TICKET_LIFETIME = 10800
 TARGET_CHANNEL_ID = 1478741064054603828
 TARGET_USER_IDS = [560386166885580800]
 TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
+
+RULES_THREAD_ID = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -77,6 +78,8 @@ threading.Thread(target=run_flask, daemon=True).start()
 # =====================================
 
 async def auto_delete_ticket(thread_id, channel_id):
+    if thread_id == RULES_THREAD_ID:
+        return
     await asyncio.sleep(TICKET_LIFETIME)
     if thread_id in ticket_closed:
         return
@@ -96,6 +99,7 @@ async def auto_delete_ticket(thread_id, channel_id):
 
 @bot.event
 async def on_ready():
+    global RULES_THREAD_ID
     print(f"✅ Бот {bot.user} запущен")
     print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
     
@@ -103,7 +107,10 @@ async def on_ready():
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
                 for thread in channel.threads:
-                    if thread.id not in ticket_timers and thread.id not in ticket_closed:
+                    if thread.name == "📋-правила-поддержки":
+                        RULES_THREAD_ID = thread.id
+                        print(f"✅ Найдена ветка с правилами: {thread.name}")
+                    if thread.id not in ticket_timers and thread.id not in ticket_closed and thread.id != RULES_THREAD_ID:
                         if "тикет" in thread.name:
                             task = asyncio.create_task(auto_delete_ticket(thread.id, channel.id))
                             ticket_timers[thread.id] = task
@@ -171,6 +178,10 @@ class CloseButton(Button):
         try:
             await interaction.response.defer(ephemeral=False)
 
+            if interaction.channel.id == RULES_THREAD_ID:
+                await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
+                return
+
             if interaction.channel.id in ticket_closed:
                 await interaction.followup.send("❌ Этот тикет уже закрыт", ephemeral=True)
                 return
@@ -215,6 +226,10 @@ class TimeoutButton(Button):
         try:
             await interaction.response.defer(ephemeral=False)
 
+            if interaction.channel.id == RULES_THREAD_ID:
+                await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
+                return
+
             is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
             if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
                 await interaction.followup.send("❌ У вас нет прав", ephemeral=True)
@@ -239,9 +254,110 @@ class TimeoutButton(Button):
         except Exception as e:
             await handle_error(interaction, e)
 
-class TicketView(View):
+class RulesButton(Button):
     def __init__(self):
+        super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.response.send_message("❌ У вас нет доступа к этой кнопке", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+
+        global RULES_THREAD_ID
+
+        channel = interaction.channel
+        for thread in channel.threads:
+            if thread.id == RULES_THREAD_ID:
+                await interaction.followup.send(f"✅ Ветка с правилами уже существует: {thread.mention}")
+                return
+
+        thread = await channel.create_thread(
+            name="📋-правила-поддержки",
+            auto_archive_duration=10080,
+            type=discord.ChannelType.public_thread
+        )
+
+        RULES_THREAD_ID = thread.id
+
+        await thread.edit(archived=False, locked=False)
+        await thread.add_user(interaction.user)
+
+        overwrite = discord.PermissionOverwrite()
+        overwrite.send_messages = False
+        overwrite.read_message_history = True
+        overwrite.view_channel = True
+        await thread.edit(overwrites={interaction.guild.default_role: overwrite})
+
+        overwrite_owner = discord.PermissionOverwrite()
+        overwrite_owner.send_messages = True
+        overwrite_owner.read_message_history = True
+        overwrite_owner.view_channel = True
+        await thread.edit(overwrites={interaction.user: overwrite_owner})
+
+        # ======== ПРАВИЛА ДЛЯ ТИКЕТОВ ========
+        rules_embed = discord.Embed(
+            title="📋 **Правила технической поддержки**",
+            description=(
+                "**1. Общие положения**\n"
+                "1.1. Настоящие правила обязательны для всех участников тикетов.\n"
+                "1.2. Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.\n"
+                "1.3. Администрация оставляет за собой право толковать правила в спорных ситуациях.\n\n"
+
+                "**2. Уважение и этика**\n"
+                "2.1. Запрещены оскорбления, грубость, переход на личности и агрессия в любой форме.\n"
+                "2.2. За первое нарушение — **предупреждение**.\n"
+                "2.3. За повторное нарушение — **закрытие ветки** без права восстановления.\n\n"
+
+                "**3. Адекватность и порядок**\n"
+                "3.1. Запрещён флуд, спам, бессмысленные сообщения, провокации.\n"
+                "3.2. За такие сообщения ветка **закрывается сразу**, без предупреждения.\n"
+                "3.3. Все сообщения должны быть по делу и содержать полезную информацию.\n\n"
+
+                "**4. Формат обращения**\n"
+                "4.1. Указывайте свой ник, суть проблемы и доказательства (скрины, видео, логи).\n"
+                "4.2. Если вопрос не относится к техподдержке — ветка будет закрыта.\n"
+                "4.3. Запрещено создавать несколько тикетов по одной проблеме.\n\n"
+
+                "**5. Конфиденциальность**\n"
+                "5.1. Ветки являются приватными — в них пишут только автор и **Admins & Security**.\n"
+                "5.2. Запрещено передавать содержимое тикетов третьим лицам.\n"
+                "5.3. Нарушение конфиденциальности — **закрытие ветки**.\n\n"
+
+                "**6. Ответственность**\n"
+                "6.1. Автор тикета несёт ответственность за достоверность информации.\n"
+                "6.2. За ложные жалобы — **закрытие ветки**.\n"
+                "6.3. Администрация оставляет за собой право закрыть ветку без объяснения причин.\n\n"
+
+                "---\n"
+                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
+            ),
+            color=discord.Color.gold()
+        )
+
+        # ======== ПРАВИЛА ДЛЯ ПРЕДЛОЖЕНИЙ ========
+        suggestion_rules_embed = discord.Embed(
+            title="💡 **Правила для предложений**",
+            description=(
+                "1.1. Предложения должны быть чёткими и по делу.\n"
+                "1.2. Запрещены оскорбления, флуд и спам.\n"
+                "1.3. За нарушение — ветка закрывается без предупреждения.\n"
+                "1.4. Администрация рассматривает все предложения, но не обязана их реализовывать.\n\n"
+                "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
+            ),
+            color=discord.Color.gold()
+        )
+
+        await thread.send(embed=rules_embed)
+        await thread.send(embed=suggestion_rules_embed)
+        await thread.send("🔒 **Правила закреплены. Нарушение правил влечёт закрытие ветки.**")
+        await interaction.followup.send(f"✅ Ветка с правилами создана: {thread.mention}")
+
+class TicketView(View):
+    def __init__(self, user_id):
         super().__init__(timeout=None)
+        self.user_id = user_id
 
     @discord.ui.button(label="🔴 Жалоба на администрацию", style=discord.ButtonStyle.danger, row=0)
     async def create_admin_ticket(self, interaction: discord.Interaction, button: Button):
@@ -288,10 +404,8 @@ class TicketView(View):
 
             await thread.edit(archived=False, locked=False)
 
-            # ======== ЛОГИКА ТЕГОВ И ДОБАВЛЕНИЯ УЧАСТНИКОВ ========
             if is_suggestion:
                 mention_text = f"<@{AUTHORIZED_USER_ID}>"
-                # НЕ добавляем никого в тикет
             else:
                 role_mentions = [f"<@&{role_id}>" for role_id in SUPPORT_ROLE_IDS if interaction.guild.get_role(role_id)]
                 mention_text = " ".join(role_mentions) if role_mentions else ""
@@ -311,7 +425,6 @@ class TicketView(View):
                         await thread.add_user(owner)
                 except:
                     pass
-            # =====================================================
 
             ticket_owners[thread.id] = interaction.user.id
             ticket_stats["created"] += 1
@@ -319,7 +432,6 @@ class TicketView(View):
             task = asyncio.create_task(auto_delete_ticket(thread.id, interaction.channel.id))
             ticket_timers[thread.id] = task
 
-            # ======== РАЗНЫЕ ШАБЛОНЫ ========
             if is_suggestion:
                 embed = discord.Embed(
                     title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ",
@@ -328,9 +440,8 @@ class TicketView(View):
                         f"📌 **Тип:** Предложение\n"
                         f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
                         "📊 **Статус:** 🟡 На рассмотрении\n\n"
-                        "✏️ **Заполните форму:**\n"
-                        "1️⃣ Ваш ник: _________\n"
-                        "2️⃣ Ваша идея: _________\n"
+                        "✏️ **Опишите вашу идею:**\n"
+                        "➡️ Ваша идея: _________\n"
                     ),
                     color=color
                 )
@@ -343,14 +454,12 @@ class TicketView(View):
                         f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
                         "📊 **Статус:** 🔵 Открыт\n\n"
                         "✏️ **Заполните форму:**\n"
-                        "1️⃣ Ваш ник: _________\n"
-                        "2️⃣ Ник нарушителя: _______\n"
-                        "3️⃣ Время: _________\n"
-                        "4️⃣ Доказательства: _________\n"
+                        "➡️ Ник нарушителя: _________\n"
+                        "➡️ Время: _________\n"
+                        "➡️ Доказательства: _________\n"
                     ),
                     color=color
                 )
-            # =================================
 
             close_view = View()
             close_view.add_item(CloseButton())
@@ -396,12 +505,19 @@ async def setup_tickets_slash(interaction: discord.Interaction):
         except:
             pass
 
+    # Создаём меню с кнопками
+    view = TicketView(interaction.user.id)
+    
+    # Если пользователь — владелец, добавляем кнопку "Правила"
+    if interaction.user.id == AUTHORIZED_USER_ID:
+        view.add_item(RulesButton())
+
     embed = discord.Embed(
         title="🎫 Техническая поддержка",
         description="🔴 **Жалоба на администрацию**\n🟢 **Жалоба на пользователя**\n💡 **Предложение**",
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(embed=embed, view=TicketView())
+    await interaction.response.send_message(embed=embed, view=view)
     last_menu_message_id[interaction.channel.id] = (await interaction.original_response()).id
 
 bot.run(TOKEN)
