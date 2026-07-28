@@ -118,9 +118,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
-
+    # Проверяем, нужно ли ставить реакцию ДО проверки на бота
     should_add_emoji = False
     if message.channel.id == TARGET_CHANNEL_ID:
         should_add_emoji = True
@@ -138,6 +136,11 @@ async def on_message(message):
         except:
             pass
 
+    # Теперь проверяем, не бот ли это (чтобы не обрабатывать команды от ботов)
+    if message.author.bot:
+        return
+
+    # Остальная логика (ответы на упоминания и т.д.)
     if bot.user in message.mentions:
         content = message.content.lower()
         if "как создать тикет" in content:
