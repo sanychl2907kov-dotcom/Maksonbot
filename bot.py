@@ -307,8 +307,14 @@ async def setup(i: discord.Interaction):
 async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Нарушение"):
     if not is_support(i.channel) or not (any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) or i.user.id == AUTHORIZED_USER_ID):
         await i.response.send_message("❌ Нет прав", ephemeral=True); return
+    
+    # ✅ ЗАЩИТА: нельзя затаймаутить владельца (тебя)
+    if user.id == AUTHORIZED_USER_ID:
+        await i.response.send_message("❌ Нельзя выдать тайм-аут владельцу", ephemeral=True); return
+    
     if user in (bot.user, i.user) or not (1 <= minutes <= 40320):
         await i.response.send_message("❌ Недопустимый пользователь или время", ephemeral=True); return
+    
     await i.response.defer(ephemeral=False)
     await user.timeout(discord.utils.utcnow() + timedelta(minutes=minutes), reason=reason)
     await i.followup.send(embed=discord.Embed(title="⏰ Тайм-аут", description=f"👤 {user.mention}\n🕒 {minutes} мин\n📝 {reason}\n👮 {i.user.mention}", color=discord.Color.red()))
@@ -380,13 +386,11 @@ async def commands_cmd(i: discord.Interaction):
         await i.response.send_message("❌ Нет прав", ephemeral=True)
         return
     
-    # Сразу отвечаем, чтобы не было таймаута
     await i.response.defer(ephemeral=True)
     
     global COMMANDS_THREAD_ID
     channel = i.channel
     
-    # Проверяем существующую ветку
     for t in channel.threads:
         if t.name == "📋-commands-security-admins":
             COMMANDS_THREAD_ID = t.id
@@ -394,7 +398,6 @@ async def commands_cmd(i: discord.Interaction):
             return
     
     try:
-        # Создаём приватную ветку
         t = await channel.create_thread(
             name="📋-commands-security-admins",
             auto_archive_duration=10080,
@@ -402,10 +405,8 @@ async def commands_cmd(i: discord.Interaction):
         )
         COMMANDS_THREAD_ID = t.id
         
-        # Добавляем пользователя
         await t.add_user(i.user)
         
-        # Добавляем роли поддержки
         for rid in SUPPORT_ROLE_IDS:
             role = i.guild.get_role(rid)
             if role:
@@ -413,13 +414,10 @@ async def commands_cmd(i: discord.Interaction):
                     try: await t.add_user(member)
                     except: pass
         
-        # Добавляем бота
         await t.add_user(i.guild.me)
         
-        # Ждём немного
         await asyncio.sleep(1)
         
-        # Отправляем сообщение
         embed = discord.Embed(
             title="📋 Commands for Security & Admins",
             description=(
