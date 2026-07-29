@@ -5,6 +5,8 @@ import time
 import random
 import asyncio
 import os
+import sqlite3
+from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask
 import threading
@@ -29,16 +31,66 @@ TARGET_USER_IDS = [560386166885580800]
 TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
 
 RULES_THREAD_ID = None
+voice_channels = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ========== БАЗА ДАННЫХ ==========
+def init_db():
+    conn = sqlite3.connect('tickets.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT,
+        user_id TEXT,
+        user_name TEXT,
+        ticket_type TEXT,
+        subcategory TEXT,
+        created_at TEXT,
+        closed_at TEXT,
+        closed_by TEXT,
+        status TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def add_ticket_to_db(thread_id, user_id, user_name, ticket_type, subcategory):
+    conn = sqlite3.connect('tickets.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO tickets (thread_id, user_id, user_name, ticket_type, subcategory, created_at, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
+              (str(thread_id), str(user_id), user_name, ticket_type, subcategory, datetime.now().isoformat(), 'open'))
+    conn.commit()
+    conn.close()
+
+def close_ticket_in_db(thread_id, closed_by):
+    conn = sqlite3.connect('tickets.db')
+    c = conn.cursor()
+    c.execute('''UPDATE tickets SET closed_at = ?, closed_by = ?, status = 'closed'
+                 WHERE thread_id = ? AND status = 'open' ''',
+              (datetime.now().isoformat(), str(closed_by), str(thread_id)))
+    conn.commit()
+    conn.close()
+
+def get_user_tickets(user_id):
+    conn = sqlite3.connect('tickets.db')
+    c = conn.cursor()
+    c.execute('''SELECT ticket_type, subcategory, created_at, status FROM tickets
+                 WHERE user_id = ? ORDER BY created_at DESC''', (str(user_id),))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+init_db()
+# ==========================================
+
 ticket_owners = {}
 last_menu_message_id = {}
-ticket_timers = {}
 ticket_stats = {"created": 0, "closed": 0}
 ticket_closed = set()
 ticket_creation_time = {}
@@ -123,26 +175,6 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 # =====================================
-
-async def auto_delete_ticket(thread_id, channel_id):
-    if thread_id == RULES_THREAD_ID:
-        return
-    await asyncio.sleep(TICKET_LIFETIME)
-    if thread_id in ticket_closed:
-        return
-    try:
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            return
-        thread = next((t for t in channel.threads if t.id == thread_id), None)
-        if thread and not thread.archived:
-            await thread.delete()
-            ticket_owners.pop(thread_id, None)
-            ticket_timers.pop(thread_id, None)
-            ticket_stats["closed"] += 1
-            ticket_closed.add(thread_id)
-    except:
-        pass
 
 async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
     if rule_numbers:
@@ -261,11 +293,6 @@ async def on_ready():
                     if thread.name == "📋-правила-поддержки":
                         RULES_THREAD_ID = thread.id
                         print(f"✅ Найдена ветка с правилами: {thread.name}")
-                    if thread.id not in ticket_timers and thread.id not in ticket_closed and thread.id != RULES_THREAD_ID:
-                        if "тикет" in thread.name:
-                            task = asyncio.create_task(auto_delete_ticket(thread.id, channel.id))
-                            ticket_timers[thread.id] = task
-                            print(f"🔄 Восстановлен таймер для тикета {thread.name}")
 
 @bot.event
 async def on_message(message):
@@ -286,39 +313,7 @@ async def on_message(message):
         except:
             pass
 
-    if message.author.bot:
-        return
-
-    if bot.user in message.mentions:
-        content = message.content.lower()
-        if "как создать тикет" in content:
-            embed = discord.Embed(
-                title="📋 Как создать тикет",
-                description="1️⃣ Используй команду `/setup_tickets`\n2️⃣ Нажми на кнопку **Создать тикет**\n3️⃣ Выбери тип\n4️⃣ Заполни шаблон\n🕒 Ответ в течение 30 минут",
-                color=discord.Color.blue()
-            )
-            await message.channel.send(embed=embed)
-            return
-
-        if any(w in content for w in ["привет", "здарова", "хай"]):
-            await message.channel.send(random.choice(["Привет! 👋", "Здарова!", "Хай! Как дела?"]))
-            return
-        if "доброе утро" in content:
-            await message.channel.send("Доброе утро! ☀️")
-            return
-        if "добрый день" in content:
-            await message.channel.send("Добрый день! 🌤️")
-            return
-        if "добрый вечер" in content:
-            await message.channel.send("Добрый вечер! 🌙")
-            return
-        if "спокойной ночи" in content:
-            await message.channel.send("Спокойной ночи! 🌙")
-            return
-        if "?" in content:
-            await message.channel.send(random.choice(["Я не знаю 🤖", "Хороший вопрос!", "Спроси полегче", "Мне кажется, ты знаешь ответ", "Ответ: 42 😄"]))
-            return
-
+    # ✅ НЕТ ОТВЕТОВ НА УПОМИНАНИЯ
     await bot.process_commands(message)
 
 class CloseButton(Button):
@@ -328,6 +323,7 @@ class CloseButton(Button):
     async def callback(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=False)
+            await interaction.followup.send("✅ Тикет закрывается...")
 
             if interaction.channel.id == RULES_THREAD_ID:
                 await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
@@ -372,15 +368,18 @@ class CloseButton(Button):
                         await interaction.followup.send(f"⚠️ {interaction.user.mention} вы создали и закрыли тикет слишком быстро. Нарушение {fake_ticket_counter[user_id]} из {MAX_FAKE_TICKETS}. При достижении {MAX_FAKE_TICKETS} — тайм-аут {FAKE_TICKET_TIMEOUT//60} минут.")
 
             ticket_closed.add(interaction.channel.id)
-            await interaction.followup.send("✅ Тикет закрывается...")
+            
+            close_ticket_in_db(interaction.channel.id, interaction.user.id)
+            
+            if interaction.channel.id in voice_channels:
+                vc = bot.get_channel(voice_channels[interaction.channel.id])
+                if vc:
+                    await vc.delete()
+                del voice_channels[interaction.channel.id]
             
             ticket_owners.pop(interaction.channel.id, None)
             ticket_stats["closed"] += 1
             ticket_creation_time.pop(interaction.channel.id, None)
-
-            if interaction.channel.id in ticket_timers:
-                ticket_timers[interaction.channel.id].cancel()
-                ticket_timers.pop(interaction.channel.id, None)
 
             try:
                 await interaction.channel.delete()
@@ -474,9 +473,33 @@ class SubcategoryView(View):
 
         await thread.edit(archived=False, locked=False)
 
-        if self.main_type == "предложение":
-            mention_text = f"<@{AUTHORIZED_USER_ID}>"
-        else:
+        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ ==========
+        try:
+            guild = interaction.guild
+            category = interaction.channel.category
+            voice_channel = await guild.create_voice_channel(
+                name=f"🔊 {thread_name[:80]}",
+                category=category,
+                user_limit=10,
+                reason=f"Тикет от {interaction.user.name}"
+            )
+            voice_channels[thread.id] = voice_channel.id
+            
+            for role_id in SUPPORT_ROLE_IDS:
+                role = guild.get_role(role_id)
+                if role:
+                    await voice_channel.set_permissions(role, connect=True, speak=True)
+            
+            await voice_channel.set_permissions(interaction.user, connect=True, speak=True)
+            await voice_channel.set_permissions(guild.default_role, connect=False)
+            
+            await thread.send(f"🔊 Создан голосовой канал: {voice_channel.mention}")
+        except Exception as e:
+            await thread.send(f"⚠️ Не удалось создать голосовой канал: {e}")
+        # ==========================================
+
+        if self.main_type == "жалоба":
+            mention_text = None
             role_mentions = [f"<@&{role_id}>" for role_id in SUPPORT_ROLE_IDS if interaction.guild.get_role(role_id)]
             mention_text = " ".join(role_mentions) if role_mentions else ""
             
@@ -495,13 +518,14 @@ class SubcategoryView(View):
                     await thread.add_user(owner)
             except:
                 pass
+        else:
+            mention_text = f"<@{AUTHORIZED_USER_ID}>"
 
         ticket_owners[thread.id] = interaction.user.id
         ticket_creation_time[thread.id] = time.time()
         ticket_stats["created"] += 1
 
-        task = asyncio.create_task(auto_delete_ticket(thread.id, interaction.channel.id))
-        ticket_timers[thread.id] = task
+        add_ticket_to_db(thread.id, interaction.user.id, interaction.user.name, self.main_type, subcategory)
 
         if self.main_type == "предложение":
             embed = discord.Embed(
@@ -605,12 +629,17 @@ async def my_tickets(ctx):
         await ctx.send("❌ Этот канал не для тикетов")
         return
 
-    user_tickets = []
-    for t in ctx.channel.threads:
-        if f"-{ctx.author.id}-" in t.name or t.name.endswith(f"-{ctx.author.id}"):
-            user_tickets.append(t.mention)
+    user_tickets = get_user_tickets(ctx.author.id)
+    if not user_tickets:
+        await ctx.send("📋 У вас нет активных тикетов")
+        return
 
-    await ctx.send(f"📋 Ваши тикеты:\n{', '.join(user_tickets) if user_tickets else 'Нет активных тикетов'}")
+    embed = discord.Embed(
+        title="📋 Ваши тикеты",
+        description="\n".join([f"**{row[0]}** → {row[1]} (создан: <t:{int(datetime.fromisoformat(row[2]).timestamp())}:R>, статус: {row[3]})" for row in user_tickets[:10]]),
+        color=discord.Color.blue()
+    )
+    await ctx.send(embed=embed)
 
 # ========== КОМАНДА /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
