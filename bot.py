@@ -417,39 +417,34 @@ async def commands_cmd(i: discord.Interaction):
     global COMMANDS_THREAD_ID
     channel = i.channel
     
-    # Проверяем все ветки в канале
     for t in channel.threads:
         if t.name == "📋-commands-security-admins":
             COMMANDS_THREAD_ID = t.id
             await i.response.send_message(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
             return
     
-    # Создаём ПРИВАТНУЮ ветку
     try:
         t = await channel.create_thread(
             name="📋-commands-security-admins",
             auto_archive_duration=10080,
-            type=discord.ChannelType.private_thread  # ✅ ПРИВАТНАЯ
+            type=discord.ChannelType.private_thread
         )
         COMMANDS_THREAD_ID = t.id
         
-        # Добавляем создателя
         await t.add_user(i.user)
         
-        # Добавляем все роли поддержки
         for rid in SUPPORT_ROLE_IDS:
             role = i.guild.get_role(rid)
             if role:
                 for member in role.members:
-                    try:
-                        await t.add_user(member)
-                    except:
-                        pass
+                    try: await t.add_user(member)
+                    except: pass
         
-        # Добавляем бота (он и так есть, но на всякий случай)
         await t.add_user(i.guild.me)
         
-        # Отправляем сообщение
+        # ✅ Небольшая задержка перед отправкой
+        await asyncio.sleep(1)
+        
         await t.send(embed=discord.Embed(
             title="📋 Commands for Security & Admins",
             description=(
