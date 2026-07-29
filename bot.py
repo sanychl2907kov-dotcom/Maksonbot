@@ -87,7 +87,6 @@ def is_support_channel(channel):
         return True
     return False
 
-# ========== АНТИКРАШ ==========
 async def handle_error(interaction, error, custom_message=None):
     try:
         error_text = str(error)
@@ -145,10 +144,7 @@ async def auto_delete_ticket(thread_id, channel_id):
     except:
         pass
 
-# ========== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРАВИЛ ==========
 async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
-    """Отправляет правила в указанный тред. НЕ удаляет старые сообщения, НЕ трогает кнопки."""
-    
     if rule_numbers:
         rule_list = [r.strip() for r in rule_numbers.split(",")]
         found_rules = []
@@ -180,54 +176,44 @@ async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
                 "1.1. Настоящие правила обязательны для всех участников тикетов.\n"
                 "1.2. Игнорирование правил влечёт за собой меры от предупреждения до закрытия ветки.\n"
                 "1.3. Администрация оставляет за собой право толковать правила в спорных ситуациях.\n\n"
-
                 "**2. Уважение и этика**\n"
                 "2.1. Запрещены оскорбления, грубость, переход на личности и агрессия в любой форме.\n"
                 "2.2. За первое нарушение — **предупреждение**.\n"
                 "2.3. За повторное нарушение — **закрытие ветки** без права восстановления.\n\n"
-
                 "**3. Адекватность и порядок**\n"
                 "3.1. Запрещён флуд, спам, бессмысленные сообщения, провокации.\n"
                 "3.2. За такие сообщения ветка **закрывается сразу**, без предупреждения.\n"
                 "3.3. Все сообщения должны быть по делу и содержать полезную информацию.\n\n"
-
                 "**4. Формат обращения**\n"
                 "4.1. Указывайте свой ник, суть проблемы и доказательства (скрины, видео, логи).\n"
                 "4.2. Если вопрос не относится к техподдержке — ветка будет закрыта.\n"
                 "4.3. Запрещено создавать несколько тикетов по одной проблеме.\n\n"
-
                 "**5. Конфиденциальность**\n"
                 "5.1. Ветки являются приватными — в них пишут только автор и **Admins & Security**.\n"
                 "5.2. Запрещено передавать содержимое тикетов третьим лицам.\n"
                 "5.3. Нарушение конфиденциальности — **закрытие ветки**.\n\n"
-
                 "**6. Ответственность**\n"
                 "6.1. Автор тикета несёт ответственность за достоверность информации.\n"
                 "6.2. За ложные жалобы — **закрытие ветки**.\n"
                 "6.3. Администрация оставляет за собой право закрыть ветку без объяснения причин.\n"
                 "6.4. За создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**.\n"
                 "6.5. При 4 таких тикетах подряд — **тайм-аут 5 минут**.\n\n"
-
                 "**7. Сроки и ожидание**\n"
                 "7.1. Ответ на тикет даётся в течение **30 минут** (в рабочее время).\n"
                 "7.2. Если автор не отвечает в течение **24 часов** — тикет автоматически закрывается.\n"
                 "7.3. Автор может запросить продление времени, если нужно больше времени на сбор информации.\n\n"
-
                 "**8. Доказательства и факты**\n"
                 "8.1. Все жалобы должны подтверждаться доказательствами (скриншоты, видео, логи).\n"
                 "8.2. Подделка доказательств — **закрытие ветки** (при повторении — **предупреждение**).\n"
                 "8.3. Если доказательств нет — жалоба рассматривается, но решение может быть отложено.\n\n"
-
                 "**9. Коммуникация с администрацией**\n"
                 "9.1. Запрещено требовать немедленного ответа или ускорять рассмотрение.\n"
                 "9.2. Все вопросы задаются в рамках тикета — личные сообщения администрации **не принимаются**.\n"
                 "9.3. Грубость в адрес администрации — **предупреждение**, при повторении — **закрытие ветки**.\n\n"
-
                 "**10. Закрытие тикета**\n"
                 "10.1. Тикет закрывается после решения проблемы или по инициативе автора.\n"
                 "10.2. После закрытия ветка **удаляется** — восстановление невозможно.\n"
                 "10.3. Автор может повторно открыть тикет только через **новое обращение**.\n\n"
-
                 "---\n"
                 "🔒 **Правила действуют на всех участников ветки, включая проверяющих.**"
             ),
@@ -440,125 +426,184 @@ class RulesButton(Button):
         await send_rules_to_thread(thread)
         await interaction.followup.send(f"✅ Приватная ветка с правилами создана: {thread.mention}")
 
-class TicketView(View):
-    def __init__(self, user_id):
-        super().__init__(timeout=None)
-        self.user_id = user_id
+class SubcategoryView(View):
+    def __init__(self, parent_interaction, main_type, color):
+        super().__init__(timeout=120)
+        self.parent_interaction = parent_interaction
+        self.main_type = main_type
+        self.color = color
+        self.is_disabled = False
 
-    @discord.ui.button(label="🔴 Жалоба на администрацию", style=discord.ButtonStyle.danger, row=0)
-    async def create_admin_ticket(self, interaction: discord.Interaction, button: Button):
-        await self.create_ticket(interaction, "администрацию", discord.Color.red(), is_suggestion=False)
+    async def create_sub_ticket(self, interaction: discord.Interaction, subcategory: str):
+        # Отключаем все кнопки, чтобы нельзя было нажать повторно
+        self.is_disabled = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
 
-    @discord.ui.button(label="🟢 Жалоба на пользователя", style=discord.ButtonStyle.success, row=0)
-    async def create_user_ticket(self, interaction: discord.Interaction, button: Button):
-        await self.create_ticket(interaction, "пользователя", discord.Color.green(), is_suggestion=False)
+        await interaction.response.defer(ephemeral=True)
 
-    @discord.ui.button(label="💡 Предложение", style=discord.ButtonStyle.blurple, row=0)
-    async def create_suggestion_ticket(self, interaction: discord.Interaction, button: Button):
-        await self.create_ticket(interaction, "предложение", discord.Color.gold(), is_suggestion=True)
+        if not is_support_channel(interaction.channel):
+            await interaction.followup.send("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+            return
 
-    async def create_ticket(self, interaction: discord.Interaction, ticket_type: str, color, is_suggestion: bool = False):
-        try:
-            await interaction.response.defer(ephemeral=True)
+        if not interaction.channel.permissions_for(interaction.guild.me).create_private_threads:
+            await interaction.followup.send("❌ Нет прав на создание тредов", ephemeral=True)
+            return
 
-            if not is_support_channel(interaction.channel):
-                await interaction.followup.send("❌ Эта команда работает только в канале поддержки", ephemeral=True)
-                return
+        user_tickets = 0
+        for t in interaction.channel.threads:
+            if t.name.endswith(f"-{interaction.user.id}") or f"-{interaction.user.id}-" in t.name:
+                user_tickets += 1
+        if user_tickets >= MAX_TICKETS_PER_USER:
+            await interaction.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER} тикета", ephemeral=True)
+            return
 
-            if not interaction.channel.permissions_for(interaction.guild.me).create_private_threads:
-                await interaction.followup.send("❌ Нет прав на создание тредов", ephemeral=True)
-                return
+        thread_name = f"тикет-{interaction.user.name}-{interaction.user.id}-{self.main_type}-{subcategory}"
+        if any(t.name == thread_name for t in interaction.channel.threads):
+            await interaction.followup.send("❌ Уже есть активный тикет с такой темой", ephemeral=True)
+            return
 
-            user_tickets = 0
-            for t in interaction.channel.threads:
-                if t.name.endswith(f"-{interaction.user.id}") or f"-{interaction.user.id}-" in t.name:
-                    user_tickets += 1
-            if user_tickets >= MAX_TICKETS_PER_USER:
-                await interaction.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER} тикета", ephemeral=True)
-                return
+        thread = await interaction.channel.create_thread(
+            name=thread_name,
+            auto_archive_duration=1440,
+            type=discord.ChannelType.private_thread
+        )
 
-            thread_name = f"тикет-{interaction.user.name}-{interaction.user.id}-{ticket_type}"
-            if any(t.name == thread_name for t in interaction.channel.threads):
-                await interaction.followup.send("❌ Уже есть активный тикет", ephemeral=True)
-                return
+        await thread.edit(archived=False, locked=False)
 
-            thread = await interaction.channel.create_thread(
-                name=thread_name,
-                auto_archive_duration=1440,
-                type=discord.ChannelType.private_thread
+        if self.main_type == "предложение":
+            mention_text = f"<@{AUTHORIZED_USER_ID}>"
+        else:
+            role_mentions = [f"<@&{role_id}>" for role_id in SUPPORT_ROLE_IDS if interaction.guild.get_role(role_id)]
+            mention_text = " ".join(role_mentions) if role_mentions else ""
+            
+            for role_id in SUPPORT_ROLE_IDS:
+                role = interaction.guild.get_role(role_id)
+                if role:
+                    for member in role.members:
+                        try:
+                            await thread.add_user(member)
+                        except:
+                            pass
+
+            try:
+                owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
+                if owner:
+                    await thread.add_user(owner)
+            except:
+                pass
+
+        ticket_owners[thread.id] = interaction.user.id
+        ticket_creation_time[thread.id] = time.time()
+        ticket_stats["created"] += 1
+
+        task = asyncio.create_task(auto_delete_ticket(thread.id, interaction.channel.id))
+        ticket_timers[thread.id] = task
+
+        if self.main_type == "предложение":
+            embed = discord.Embed(
+                title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ",
+                description=(
+                    f"👤 **Автор:** {interaction.user.mention}\n"
+                    f"📌 **Тип:** Предложение → {subcategory}\n"
+                    f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
+                    "📊 **Статус:** 🟡 На рассмотрении\n\n"
+                    "✏️ **Опишите вашу идею:**\n"
+                    "➡️ Ваша идея: _________\n"
+                ),
+                color=self.color
+            )
+        else:
+            embed = discord.Embed(
+                title="📋 НОВЫЙ ТИКЕТ",
+                description=(
+                    f"👤 **Автор:** {interaction.user.mention}\n"
+                    f"📌 **Тип:** Жалоба → {subcategory}\n"
+                    f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
+                    "📊 **Статус:** 🔵 Открыт\n\n"
+                    "✏️ **Заполните форму:**\n"
+                    "➡️ Ник нарушителя: _________\n"
+                    "➡️ Время: _________\n"
+                    "➡️ Доказательства: _________\n"
+                ),
+                color=self.color
             )
 
-            await thread.edit(archived=False, locked=False)
+        close_view = View()
+        close_view.add_item(CloseButton())
 
-            if is_suggestion:
-                mention_text = f"<@{AUTHORIZED_USER_ID}>"
-            else:
-                role_mentions = [f"<@&{role_id}>" for role_id in SUPPORT_ROLE_IDS if interaction.guild.get_role(role_id)]
-                mention_text = " ".join(role_mentions) if role_mentions else ""
-                
-                for role_id in SUPPORT_ROLE_IDS:
-                    role = interaction.guild.get_role(role_id)
-                    if role:
-                        for member in role.members:
-                            try:
-                                await thread.add_user(member)
-                            except:
-                                pass
+        await thread.send(embed=embed)
+        if mention_text:
+            await thread.send(f"🔔 {mention_text}")
+        await thread.send("🔧 **Управление:**", view=close_view)
 
-                try:
-                    owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
-                    if owner:
-                        await thread.add_user(owner)
-                except:
-                    pass
+        await interaction.followup.send(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
 
-            ticket_owners[thread.id] = interaction.user.id
-            ticket_creation_time[thread.id] = time.time()
-            ticket_stats["created"] += 1
+class ComplaintView(SubcategoryView):
+    def __init__(self, parent_interaction):
+        super().__init__(parent_interaction, "жалоба", discord.Color.red())
+    
+    @discord.ui.button(label="😡 Оскорбление / грубость", style=discord.ButtonStyle.danger, row=0)
+    async def complaint_insult(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "оскорбление")
 
-            task = asyncio.create_task(auto_delete_ticket(thread.id, interaction.channel.id))
-            ticket_timers[thread.id] = task
+    @discord.ui.button(label="📢 Нарушение правил чата / флуд", style=discord.ButtonStyle.danger, row=0)
+    async def complaint_spam(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "флуд")
 
-            if is_suggestion:
-                embed = discord.Embed(
-                    title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ",
-                    description=(
-                        f"👤 **Автор:** {interaction.user.mention}\n"
-                        f"📌 **Тип:** Предложение\n"
-                        f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
-                        "📊 **Статус:** 🟡 На рассмотрении\n\n"
-                        "✏️ **Опишите вашу идею:**\n"
-                        "➡️ Ваша идея: _________\n"
-                    ),
-                    color=color
-                )
-            else:
-                embed = discord.Embed(
-                    title="📋 НОВЫЙ ТИКЕТ",
-                    description=(
-                        f"👤 **Автор:** {interaction.user.mention}\n"
-                        f"📌 **Тип:** {ticket_type.capitalize()}\n"
-                        f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
-                        "📊 **Статус:** 🔵 Открыт\n\n"
-                        "✏️ **Заполните форму:**\n"
-                        "➡️ Ник нарушителя: _________\n"
-                        "➡️ Время: _________\n"
-                        "➡️ Доказательства: _________\n"
-                    ),
-                    color=color
-                )
+    @discord.ui.button(label="🎙️ Неадекватное поведение в голосовом канале", style=discord.ButtonStyle.danger, row=1)
+    async def complaint_voice(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "голосовой-канал")
 
-            close_view = View()
-            close_view.add_item(CloseButton())
+    @discord.ui.button(label="👮 Жалоба на администрацию", style=discord.ButtonStyle.danger, row=1)
+    async def complaint_admin(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "жалоба-на-админа")
 
-            await thread.send(embed=embed)
-            if mention_text:
-                await thread.send(f"🔔 {mention_text}")
-            await thread.send("🔧 **Управление:**", view=close_view)
+    @discord.ui.button(label="❓ Другое", style=discord.ButtonStyle.secondary, row=2)
+    async def complaint_other(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "другое")
 
-            await interaction.followup.send(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
-        except Exception as e:
-            await handle_error(interaction, e)
+class SuggestionView(SubcategoryView):
+    def __init__(self, parent_interaction):
+        super().__init__(parent_interaction, "предложение", discord.Color.gold())
+    
+    @discord.ui.button(label="💡 Идея для улучшения сервера", style=discord.ButtonStyle.blurple, row=0)
+    async def suggestion_idea(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "идея")
+
+    @discord.ui.button(label="🔧 Новый функционал / плагин", style=discord.ButtonStyle.blurple, row=0)
+    async def suggestion_plugin(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "функционал")
+
+    @discord.ui.button(label="🎨 Дизайн / оформление", style=discord.ButtonStyle.blurple, row=1)
+    async def suggestion_design(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "дизайн")
+
+    @discord.ui.button(label="❓ Другое", style=discord.ButtonStyle.secondary, row=1)
+    async def suggestion_other(self, interaction: discord.Interaction, button: Button):
+        await self.create_sub_ticket(interaction, "другое")
+
+class MainView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
+    async def main_complaint(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
+
+    @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
+    async def main_suggestion(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
+
+    @discord.ui.button(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
+    async def main_rules(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.response.send_message("❌ У вас нет доступа к этой кнопке", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        await RulesButton().callback(interaction)
 
 @bot.command(name="my_tickets")
 async def my_tickets(ctx):
@@ -729,17 +774,12 @@ async def setup_tickets_slash(interaction: discord.Interaction):
         except:
             pass
 
-    view = TicketView(interaction.user.id)
-    
-    if interaction.user.id == AUTHORIZED_USER_ID:
-        view.add_item(RulesButton())
-
     embed = discord.Embed(
         title="🎫 Техническая поддержка",
-        description="🔴 **Жалоба на администрацию**\n🟢 **Жалоба на пользователя**\n💡 **Предложение**",
+        description="Выберите тип обращения:",
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, view=MainView())
     last_menu_message_id[interaction.channel.id] = (await interaction.original_response()).id
 
 bot.run(TOKEN)
