@@ -512,7 +512,6 @@ class RulesButton(Button):
 
             await thread.add_user(interaction.user)
 
-            # Настройка прав через set_permissions
             await thread.set_permissions(
                 interaction.guild.default_role,
                 send_messages=False,
@@ -742,11 +741,13 @@ class MainView(View):
 
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def main_complaint(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
+        await interaction.response.defer()  # ✅ Исправлено
+        await interaction.followup.send("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
 
     @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
+        await interaction.response.defer()  # ✅ Исправлено
+        await interaction.followup.send("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
 
 # ========== КОМАНДА /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
