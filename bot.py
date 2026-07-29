@@ -7,7 +7,7 @@ import asyncio
 import os
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask
 import threading
@@ -327,34 +327,6 @@ async def on_ready():
     except Exception as e:
         log_error(e, "on_ready sync")
 
-    # ========== УДАЛЕНИЕ ДУБЛИРУЮЩИХСЯ ГОЛОСОВЫХ КАНАЛОВ ==========
-    for guild in bot.guilds:
-        for channel in guild.channels:
-            if channel.id in SUPPORT_CHANNEL_IDS:
-                active_thread_ids = {thread.id for thread in channel.threads if "тикет" in thread.name}
-                
-                category = channel.category
-                if category:
-                    for vc in category.voice_channels:
-                        found = False
-                        for thread_id in active_thread_ids:
-                            if thread_id in voice_channels and voice_channels[thread_id] == vc.id:
-                                found = True
-                                break
-                            if thread_id in ticket_owners:
-                                thread = bot.get_channel(thread_id)
-                                if thread and thread.name[:80] in vc.name:
-                                    voice_channels[thread_id] = vc.id
-                                    found = True
-                                    break
-                        
-                        if not found and "🔊" in vc.name:
-                            try:
-                                await vc.delete()
-                                print(f"🗑️ Удалён дублирующий голосовой канал: {vc.name}")
-                            except:
-                                pass
-
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -441,7 +413,7 @@ class ConfirmCloseView(View):
                     if fake_ticket_counter[user_id] >= MAX_FAKE_TICKETS:
                         member = interaction.guild.get_member(user_id)
                         if member:
-                            await member.timeout(discord.utils.utcnow() + discord.timedelta(seconds=FAKE_TICKET_TIMEOUT))
+                            await member.timeout(discord.utils.utcnow() + timedelta(seconds=FAKE_TICKET_TIMEOUT))
                             await interaction.followup.send(f"⏰ {member.mention} получил тайм-аут {FAKE_TICKET_TIMEOUT//60} минут за создание и закрытие {MAX_FAKE_TICKETS} фальшивых тикетов подряд.")
                             fake_ticket_counter[user_id] = 0
                     else:
@@ -469,12 +441,16 @@ class ConfirmCloseView(View):
         except Exception as e:
             await handle_error(interaction, e)
 
+# ========== КНОПКА ЗАКРЫТИЯ (ИСПРАВЛЕНА) ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
+        # ✅ Сразу отвечаем, чтобы избежать таймаута
+        await interaction.response.defer(ephemeral=True)
+        
+        await interaction.followup.send(
             "⚠️ **Вы уверены, что хотите закрыть этот тикет?**\nЭто действие нельзя отменить.",
             view=ConfirmCloseView(interaction),
             ephemeral=True
@@ -586,7 +562,6 @@ class SubcategoryView(View):
 
         await thread.edit(archived=False, locked=False)
 
-        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ ==========
         try:
             guild = interaction.guild
             category = interaction.channel.category
@@ -741,12 +716,12 @@ class MainView(View):
 
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def main_complaint(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()  # ✅ Исправлено
+        await interaction.response.defer()
         await interaction.followup.send("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
 
     @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()  # ✅ Исправлено
+        await interaction.response.defer()
         await interaction.followup.send("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
 
 # ========== КОМАНДА /timeout ==========
@@ -789,7 +764,7 @@ async def timeout_slash(
 
     try:
         await пользователь.timeout(
-            discord.utils.utcnow() + discord.timedelta(minutes=время),
+            discord.utils.utcnow() + timedelta(minutes=время),
             reason=причина
         )
 
