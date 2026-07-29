@@ -80,15 +80,12 @@ RULES_DICT = {
     "10.3": "Автор может повторно открыть тикет только через **новое обращение**.",
 }
 
-# ========== ФУНКЦИЯ ПРОВЕРКИ КАНАЛА ==========
 def is_support_channel(channel):
-    """Проверяет, является ли канал или его родитель каналом поддержки"""
     if channel.id in SUPPORT_CHANNEL_IDS:
         return True
     if isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS:
         return True
     return False
-# =============================================
 
 # ========== АНТИКРАШ ==========
 async def handle_error(interaction, error, custom_message=None):
@@ -150,8 +147,12 @@ async def auto_delete_ticket(thread_id, channel_id):
 
 # ========== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРАВИЛ ==========
 async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
-    async for msg in thread.history(limit=20):
+    async for msg in thread.history(limit=30):
         if msg.author == bot.user:
+            if msg.components:
+                continue
+            if msg.content and ("🔧 **Управление:**" in msg.content or "🔒 Закрыть тикет" in msg.content):
+                continue
             try:
                 await msg.delete()
             except:
@@ -411,42 +412,6 @@ class CloseButton(Button):
         except Exception as e:
             await handle_error(interaction, e)
 
-class TimeoutButton(Button):
-    def __init__(self):
-        super().__init__(label="⏰ Тайм-аут 30 мин", style=discord.ButtonStyle.danger, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(ephemeral=False)
-
-            if interaction.channel.id == RULES_THREAD_ID:
-                await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
-                return
-
-            is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
-            if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ У вас нет прав", ephemeral=True)
-                return
-
-            author_id = ticket_owners.get(interaction.channel.id)
-            if not author_id:
-                await interaction.followup.send("❌ Тикет не найден", ephemeral=True)
-                return
-
-            if interaction.user.id == author_id:
-                await interaction.followup.send("❌ Себе нельзя", ephemeral=True)
-                return
-
-            author = interaction.guild.get_member(author_id)
-            if not author:
-                await interaction.followup.send("❌ Автор не найден", ephemeral=True)
-                return
-
-            await author.timeout(discord.utils.utcnow() + discord.timedelta(seconds=TIMEOUT_DURATION))
-            await interaction.followup.send(f"⏰ {author.mention} получил тайм-аут 30 мин")
-        except Exception as e:
-            await handle_error(interaction, e)
-
 class RulesButton(Button):
     def __init__(self):
         super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
@@ -593,8 +558,7 @@ class TicketView(View):
                 )
 
             close_view = View()
-            close_view.add_item(CloseButton())
-            close_view.add_item(TimeoutButton())
+            close_view.add_item(CloseButton())  # Только кнопка закрытия
 
             await thread.send(embed=embed)
             if mention_text:
