@@ -217,9 +217,11 @@ class RulesButton(Button):
         t = await i.channel.create_thread(name="📋-правила-поддержки", auto_archive_duration=10080, type=discord.ChannelType.public_thread)
         RULES_THREAD_ID = t.id
         await t.add_user(i.user)
-        await t.set_permissions(i.guild.default_role, send_messages=False, read_messages=True, view_channel=True)
-        await t.set_permissions(i.user, send_messages=True, read_messages=True, view_channel=True)
-        await t.set_permissions(i.guild.me, send_messages=True, read_messages=True, view_channel=True)
+        await t.edit(overwrites={
+            i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
+            i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
+            i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+        })
         await asyncio.sleep(1)
         await send_rules(t)
         await i.response.send_message(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
@@ -290,11 +292,22 @@ class MainView(View):
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
+    
     try:
+        for guild in bot.guilds:
+            try:
+                await bot.tree.sync(guild=guild)
+                print(f"✅ Синхронизировано для {guild.name}")
+            except Exception as e:
+                print(f"⚠️ Ошибка синхронизации для {guild.name}: {e}")
+        
         synced = await bot.tree.sync()
-        print(f"✅ Синхронизировано {len(synced)} команд")
-        for cmd in synced: print(f"   /{cmd.name}")
-    except Exception as e: log_error(e, "sync")
+        print(f"✅ Глобально синхронизировано {len(synced)} команд")
+        for cmd in synced:
+            print(f"   /{cmd.name}")
+    except Exception as e:
+        log_error(e, "sync")
+
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
@@ -362,9 +375,11 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
                 t = await sc.create_thread(name="📋-правила-поддержки", auto_archive_duration=10080, type=discord.ChannelType.public_thread)
                 RULES_THREAD_ID = t.id
                 await t.add_user(i.user)
-                await t.set_permissions(i.guild.default_role, send_messages=False, read_messages=True, view_channel=True)
-                await t.set_permissions(i.user, send_messages=True, read_messages=True, view_channel=True)
-                await t.set_permissions(i.guild.me, send_messages=True, read_messages=True, view_channel=True)
+                await t.edit(overwrites={
+                    i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
+                    i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
+                    i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+                })
                 await asyncio.sleep(1)
                 await send_rules(t)
                 await i.followup.send(f"✅ Создана новая ветка правил: {t.mention}")
@@ -398,18 +413,38 @@ async def cleanup(i: discord.Interaction):
 async def commands_cmd(i: discord.Interaction):
     if not is_support(i.channel) or not (any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) or i.user.id == AUTHORIZED_USER_ID):
         await i.response.send_message("❌ Нет прав", ephemeral=True); return
+    
     global COMMANDS_THREAD_ID
-    for t in i.channel.threads:
+    channel = i.channel
+    
+    # Проверяем все ветки в канале
+    for t in channel.threads:
         if t.name == "📋-commands-security-admins":
             COMMANDS_THREAD_ID = t.id
-            await i.response.send_message(f"✅ Ветка уже есть: {t.mention}", ephemeral=True); return
-    t = await i.channel.create_thread(name="📋-commands-security-admins", auto_archive_duration=10080, type=discord.ChannelType.public_thread)
+            await i.response.send_message(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
+            return
+    
+    # Создаём ветку
+    t = await channel.create_thread(
+        name="📋-commands-security-admins",
+        auto_archive_duration=10080,
+        type=discord.ChannelType.public_thread
+    )
     COMMANDS_THREAD_ID = t.id
     await t.add_user(i.user)
-    await t.set_permissions(i.guild.default_role, send_messages=False, read_messages=True, view_channel=True)
+    
+    # Настраиваем права через overwrites
+    await t.edit(overwrites={
+        i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
+        i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+    })
+    
+    # Добавляем права для ролей поддержки
     for rid in SUPPORT_ROLE_IDS:
-        if (r := i.guild.get_role(rid)): await t.set_permissions(r, send_messages=True, read_messages=True, view_channel=True)
-    await t.set_permissions(i.guild.me, send_messages=True, read_messages=True, view_channel=True)
+        role = i.guild.get_role(rid)
+        if role:
+            await t.edit(overwrites={**t.overwrites, role: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)})
+    
     await t.send(embed=discord.Embed(
         title="📋 Commands for Security & Admins",
         description=(
@@ -423,7 +458,8 @@ async def commands_cmd(i: discord.Interaction):
             "• Удаляется при закрытии\n"
             "• База данных\n"
             "• Защита от фальшивых тикетов"
-        ), color=discord.Color.blue()))
+        ), color=discord.Color.blue()
+    ))
     await i.response.send_message(f"✅ Ветка создана: {t.mention}", ephemeral=True)
 
 bot.run(TOKEN)
