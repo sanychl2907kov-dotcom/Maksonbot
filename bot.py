@@ -485,7 +485,6 @@ class RulesButton(Button):
         super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        # ✅ Сразу отвечаем, чтобы избежать таймаута
         await interaction.response.defer(ephemeral=False)
 
         if interaction.user.id != AUTHORIZED_USER_ID:
@@ -502,7 +501,6 @@ class RulesButton(Button):
                 await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {thread.mention}")
                 return
 
-        # Создаём ПУБЛИЧНУЮ ветку
         try:
             thread = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -513,24 +511,6 @@ class RulesButton(Button):
             RULES_THREAD_ID = thread.id
 
             await thread.add_user(interaction.user)
-
-            overwrite_everyone = discord.PermissionOverwrite()
-            overwrite_everyone.send_messages = False
-            overwrite_everyone.read_message_history = True
-            overwrite_everyone.view_channel = True
-            await thread.edit(overwrites={interaction.guild.default_role: overwrite_everyone})
-
-            overwrite_owner = discord.PermissionOverwrite()
-            overwrite_owner.send_messages = True
-            overwrite_owner.read_message_history = True
-            overwrite_owner.view_channel = True
-            await thread.edit(overwrites={interaction.user: overwrite_owner})
-
-            overwrite_bot = discord.PermissionOverwrite()
-            overwrite_bot.send_messages = True
-            overwrite_bot.read_message_history = True
-            overwrite_bot.view_channel = True
-            await thread.edit(overwrites={interaction.guild.me: overwrite_bot})
 
             await asyncio.sleep(1)
 
