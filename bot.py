@@ -435,13 +435,15 @@ class SubcategoryView(View):
         self.is_disabled = False
 
     async def create_sub_ticket(self, interaction: discord.Interaction, subcategory: str):
-        # Отключаем все кнопки, чтобы нельзя было нажать повторно
+        await interaction.response.defer(ephemeral=True)
+
         self.is_disabled = True
         for child in self.children:
             child.disabled = True
-        await interaction.message.edit(view=self)
-
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
 
         if not is_support_channel(interaction.channel):
             await interaction.followup.send("❌ Эта команда работает только в канале поддержки", ephemeral=True)
@@ -585,8 +587,9 @@ class SuggestionView(SubcategoryView):
         await self.create_sub_ticket(interaction, "другое")
 
 class MainView(View):
-    def __init__(self):
+    def __init__(self, user_id):
         super().__init__(timeout=None)
+        self.user_id = user_id
 
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def main_complaint(self, interaction: discord.Interaction, button: Button):
@@ -595,15 +598,6 @@ class MainView(View):
     @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
-
-    @discord.ui.button(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
-    async def main_rules(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id != AUTHORIZED_USER_ID:
-            await interaction.response.send_message("❌ У вас нет доступа к этой кнопке", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=False)
-        await RulesButton().callback(interaction)
 
 @bot.command(name="my_tickets")
 async def my_tickets(ctx):
@@ -774,12 +768,16 @@ async def setup_tickets_slash(interaction: discord.Interaction):
         except:
             pass
 
+    view = MainView(interaction.user.id)
+    if interaction.user.id == AUTHORIZED_USER_ID:
+        view.add_item(RulesButton())
+
     embed = discord.Embed(
         title="🎫 Техническая поддержка",
         description="Выберите тип обращения:",
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(embed=embed, view=MainView())
+    await interaction.response.send_message(embed=embed, view=view)
     last_menu_message_id[interaction.channel.id] = (await interaction.original_response()).id
 
 bot.run(TOKEN)
