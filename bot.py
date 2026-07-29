@@ -38,6 +38,7 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
@@ -60,6 +61,7 @@ def db_close(thread_id, closed_by):
               (datetime.now().isoformat(), str(closed_by), str(thread_id)))
     conn.commit()
 
+# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners, ticket_creation_time, fake_counter, fake_last_time = {}, {}, {}, {}
 ticket_closed, voice_channels = set(), {}
 last_menu_message_id = {}
@@ -269,15 +271,27 @@ class MainView(View):
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
+    
+    # Жёсткая синхронизация
+    await bot.wait_until_ready()
     try:
+        # Синхронизация для каждого сервера
         for guild in bot.guilds:
             try:
                 await bot.tree.sync(guild=guild)
                 print(f"✅ Синхронизировано для {guild.name}")
-            except: pass
+            except Exception as e:
+                print(f"⚠️ Ошибка для {guild.name}: {e}")
+        
+        # Глобальная синхронизация
         synced = await bot.tree.sync()
         print(f"✅ Глобально синхронизировано {len(synced)} команд")
-    except Exception as e: log_error(e, "sync")
+        for cmd in synced:
+            print(f"   /{cmd.name}")
+    except Exception as e:
+        log_error(e, "sync")
+        print("⚠️ Проблема с синхронизацией, но бот продолжает работу")
+
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
