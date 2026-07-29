@@ -61,18 +61,12 @@ def db_close(thread_id, closed_by):
               (datetime.now().isoformat(), str(closed_by), str(thread_id)))
     conn.commit()
 
-def db_get(user_id):
-    c.execute('''SELECT thread_id, ticket_type, subcategory, created_at, status FROM tickets
-                 WHERE user_id = ? AND status = 'open' ORDER BY created_at DESC''', (str(user_id),))
-    return c.fetchall()
-
 # ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners, ticket_creation_time, fake_counter, fake_last_time = {}, {}, {}, {}
 ticket_closed, voice_channels = set(), {}
 last_menu_message_id = {}
 RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
-ticket_stats = {"created": 0, "closed": 0}
 
 def is_support(channel):
     return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
@@ -97,69 +91,48 @@ async def create_voice_channel(interaction, thread_name):
     except Exception as e: log_error(e, "voice_channel")
 
 async def send_rules(thread, rules=None, mention=None):
+    RULES_DICT = {
+        "1.1": "Правила обязательны для всех.",
+        "1.2": "Игнорирование = предупреждение → закрытие.",
+        "1.3": "Администрация толкует правила.",
+        "2.1": "Оскорбления, грубость, агрессия запрещены.",
+        "2.2": "Первое нарушение — предупреждение.",
+        "2.3": "Повторное — закрытие ветки.",
+        "3.1": "Флуд, спам, провокации запрещены.",
+        "3.2": "Такие сообщения → ветка закрывается сразу.",
+        "3.3": "Пишите по делу.",
+        "4.1": "Указывайте ник, суть, доказательства.",
+        "4.2": "Не по теме → ветка закрыта.",
+        "4.3": "Одна проблема — один тикет.",
+        "5.1": "Ветки приватные.",
+        "5.2": "Передача содержимого третьим лицам запрещена.",
+        "5.3": "Нарушение → закрытие ветки.",
+        "6.1": "Автор отвечает за достоверность.",
+        "6.2": "Ложные жалобы → закрытие.",
+        "6.3": "Администрация может закрыть ветку без объяснения.",
+        "6.4": "Фальшивый тикет → предупреждение.",
+        "6.5": "4 фальшивых тикета → тайм-аут 5 мин.",
+        "7.1": "Ответ в течение 30 минут.",
+        "7.2": "24 часа без ответа → авто-закрытие.",
+        "7.3": "Можно запросить продление.",
+        "8.1": "Жалобы подтверждаются доказательствами.",
+        "8.2": "Подделка → закрытие (повтор → предупреждение).",
+        "8.3": "Без доказательств — решение откладывается.",
+        "9.1": "Не требовать немедленного ответа.",
+        "9.2": "Вопросы только в тикете.",
+        "9.3": "Грубость → предупреждение, повтор → закрытие.",
+        "10.1": "Тикет закрывается после решения или по инициативе автора.",
+        "10.2": "Восстановление невозможно.",
+        "10.3": "Новый тикет — новое обращение."
+    }
     if rules:
         found = [f"**{r}.** {RULES_DICT[r]}" for r in [x.strip() for x in rules.split(",")] if r in RULES_DICT]
         if not found:
-            await thread.send(embed=discord.Embed(title="❌ Ошибка", description=f"Правила не найдены. Доступные: {', '.join(RULES_DICT.keys())}", color=discord.Color.red()))
+            await thread.send(embed=discord.Embed(title="❌ Ошибка", description=f"Правила не найдены", color=discord.Color.red()))
             return
         await thread.send(embed=discord.Embed(title="📋 Нарушение правил", description=f"{mention or ''}\n\n" + "\n".join(found), color=discord.Color.red()))
         return
-    await thread.send(embed=discord.Embed(title="📋 Правила технической поддержки", description=RULES_TEXT, color=discord.Color.gold()))
-    await thread.send(embed=discord.Embed(title="💡 Правила для предложений", description=RULES_SUGGEST, color=discord.Color.gold()))
-    await thread.send("🔒 Правила закреплены.")
-
-# ========== ТЕКСТЫ ПРАВИЛ ==========
-RULES_TEXT = (
-    "**1. Общие положения**\n1.1. Правила обязательны для всех.\n1.2. Игнорирование = предупреждение → закрытие.\n1.3. Администрация толкует правила.\n\n"
-    "**2. Уважение и этика**\n2.1. Оскорбления, грубость, агрессия запрещены.\n2.2. Первое нарушение — предупреждение.\n2.3. Повторное — закрытие ветки.\n\n"
-    "**3. Адекватность и порядок**\n3.1. Флуд, спам, провокации запрещены.\n3.2. Такие сообщения → ветка закрывается сразу.\n3.3. Пишите по делу.\n\n"
-    "**4. Формат обращения**\n4.1. Указывайте ник, суть, доказательства.\n4.2. Не по теме → ветка закрыта.\n4.3. Одна проблема — один тикет.\n\n"
-    "**5. Конфиденциальность**\n5.1. Ветки приватные.\n5.2. Передача содержимого третьим лицам запрещена.\n5.3. Нарушение → закрытие ветки.\n\n"
-    "**6. Ответственность**\n6.1. Автор отвечает за достоверность.\n6.2. Ложные жалобы → закрытие.\n6.3. Администрация может закрыть ветку без объяснения.\n"
-    "6.4. Фальшивый тикет → предупреждение.\n6.5. 4 фальшивых тикета → тайм-аут 5 мин.\n\n"
-    "**7. Сроки и ожидание**\n7.1. Ответ в течение 30 минут.\n7.2. 24 часа без ответа → авто-закрытие.\n7.3. Можно запросить продление.\n\n"
-    "**8. Доказательства и факты**\n8.1. Жалобы подтверждаются доказательствами.\n8.2. Подделка → закрытие (повтор → предупреждение).\n8.3. Без доказательств — решение откладывается.\n\n"
-    "**9. Коммуникация с администрацией**\n9.1. Не требовать немедленного ответа.\n9.2. Вопросы только в тикете.\n9.3. Грубость → предупреждение, повтор → закрытие.\n\n"
-    "**10. Закрытие тикета**\n10.1. Тикет закрывается после решения или по инициативе автора.\n10.2. Восстановление невозможно.\n10.3. Новый тикет — новое обращение.\n\n---\n🔒 Правила действуют на всех участников."
-)
-RULES_SUGGEST = (
-    "1.1. Предложения чёткие и по делу.\n1.2. Оскорбления, флуд, спам запрещены.\n1.3. Нарушение → закрытие.\n1.4. Администрация рассматривает, но не обязана реализовывать.\n"
-    "1.5. Фальшивый тикет → предупреждение.\n1.6. 4 фальшивых тикета → тайм-аут 5 мин.\n\n🔒 Правила действуют на всех."
-)
-RULES_DICT = {
-    "1.1": "Правила обязательны для всех.",
-    "1.2": "Игнорирование = предупреждение → закрытие.",
-    "1.3": "Администрация толкует правила.",
-    "2.1": "Оскорбления, грубость, агрессия запрещены.",
-    "2.2": "Первое нарушение — предупреждение.",
-    "2.3": "Повторное — закрытие ветки.",
-    "3.1": "Флуд, спам, провокации запрещены.",
-    "3.2": "Такие сообщения → ветка закрывается сразу.",
-    "3.3": "Пишите по делу.",
-    "4.1": "Указывайте ник, суть, доказательства.",
-    "4.2": "Не по теме → ветка закрыта.",
-    "4.3": "Одна проблема — один тикет.",
-    "5.1": "Ветки приватные.",
-    "5.2": "Передача содержимого третьим лицам запрещена.",
-    "5.3": "Нарушение → закрытие ветки.",
-    "6.1": "Автор отвечает за достоверность.",
-    "6.2": "Ложные жалобы → закрытие.",
-    "6.3": "Администрация может закрыть ветку без объяснения.",
-    "6.4": "Фальшивый тикет → предупреждение.",
-    "6.5": "4 фальшивых тикета → тайм-аут 5 мин.",
-    "7.1": "Ответ в течение 30 минут.",
-    "7.2": "24 часа без ответа → авто-закрытие.",
-    "7.3": "Можно запросить продление.",
-    "8.1": "Жалобы подтверждаются доказательствами.",
-    "8.2": "Подделка → закрытие (повтор → предупреждение).",
-    "8.3": "Без доказательств — решение откладывается.",
-    "9.1": "Не требовать немедленного ответа.",
-    "9.2": "Вопросы только в тикете.",
-    "9.3": "Грубость → предупреждение, повтор → закрытие.",
-    "10.1": "Тикет закрывается после решения или по инициативе автора.",
-    "10.2": "Восстановление невозможно.",
-    "10.3": "Новый тикет — новое обращение."
-}
+    await thread.send(embed=discord.Embed(title="📋 Правила техподдержки", description="...", color=discord.Color.gold()))
 
 # ========== КНОПКИ ==========
 class CloseButton(Button):
@@ -229,14 +202,13 @@ class RulesButton(Button):
 class SubcategoryView(View):
     def __init__(self, i, typ, color, labels):
         super().__init__(timeout=120)
-        self.i, self.typ, self.color = i, typ, color
         for label, sub in labels:
-            self.add_item(SubButton(label, sub, self))
+            self.add_item(SubButton(label, sub, typ, color, i))
 
 class SubButton(Button):
-    def __init__(self, label, sub, parent):
-        super().__init__(label=label, style=discord.ButtonStyle.danger if parent.typ == "жалоба" else discord.ButtonStyle.blurple, row=0)
-        self.sub, self.parent = sub, parent
+    def __init__(self, label, sub, typ, color, i):
+        super().__init__(label=label, style=discord.ButtonStyle.danger if typ == "жалоба" else discord.ButtonStyle.blurple, row=0)
+        self.sub, self.typ, self.color, self.i = sub, typ, color, i
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         if not is_support(i.channel):
@@ -247,14 +219,14 @@ class SubButton(Button):
         cnt = sum(1 for t in i.channel.threads if f"-{uid}-" in t.name or t.name.endswith(f"-{uid}"))
         if cnt >= MAX_TICKETS_PER_USER:
             await i.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER}", ephemeral=True); return
-        name = f"тикет-{i.user.name}-{uid}-{self.parent.typ}-{self.sub}"
+        name = f"тикет-{i.user.name}-{uid}-{self.typ}-{self.sub}"
         if any(t.name == name for t in i.channel.threads):
             await i.followup.send("❌ Уже есть", ephemeral=True); return
         t = await i.channel.create_thread(name=name, auto_archive_duration=1440, type=discord.ChannelType.private_thread)
         await t.edit(archived=False, locked=False)
         await create_voice_channel(i, name)
-        mention = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLE_IDS if i.guild.get_role(rid)]) if self.parent.typ == "жалоба" else f"<@{AUTHORIZED_USER_ID}>"
-        if self.parent.typ != "жалоба": mention = f"<@{AUTHORIZED_USER_ID}>"
+        mention = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLE_IDS if i.guild.get_role(rid)]) if self.typ == "жалоба" else f"<@{AUTHORIZED_USER_ID}>"
+        if self.typ != "жалоба": mention = f"<@{AUTHORIZED_USER_ID}>"
         else:
             for rid in SUPPORT_ROLE_IDS:
                 r = i.guild.get_role(rid)
@@ -265,11 +237,11 @@ class SubButton(Button):
             if (o := i.guild.get_member(AUTHORIZED_USER_ID)): await t.add_user(o)
         ticket_owners[t.id] = uid
         ticket_creation_time[t.id] = time.time()
-        db_add(t.id, uid, i.user.name, self.parent.typ, self.sub)
-        embed = discord.Embed(title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ" if self.parent.typ == "предложение" else "📋 НОВЫЙ ТИКЕТ",
-                              description=f"👤 **Автор:** {i.user.mention}\n📌 **Тип:** {self.parent.typ} → {self.sub}\n🕒 **Создан:** <t:{int(time.time())}:R>\n📊 **Статус:** {'🟡 На рассмотрении' if self.parent.typ == 'предложение' else '🔵 Открыт'}\n\n"
-                              f"✏️ **{'Опишите идею:' if self.parent.typ == 'предложение' else 'Заполните форму:'}**\n➡️ {'Ваша идея: _________' if self.parent.typ == 'предложение' else 'Ник нарушителя: _________\n➡️ Время: _________\n➡️ Доказательства: _________'}",
-                              color=self.parent.color)
+        db_add(t.id, uid, i.user.name, self.typ, self.sub)
+        embed = discord.Embed(title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ" if self.typ == "предложение" else "📋 НОВЫЙ ТИКЕТ",
+                              description=f"👤 **Автор:** {i.user.mention}\n📌 **Тип:** {self.typ} → {self.sub}\n🕒 **Создан:** <t:{int(time.time())}:R>\n📊 **Статус:** {'🟡 На рассмотрении' if self.typ == 'предложение' else '🔵 Открыт'}\n\n"
+                              f"✏️ **{'Опишите идею:' if self.typ == 'предложение' else 'Заполните форму:'}**\n➡️ {'Ваша идея: _________' if self.typ == 'предложение' else 'Ник нарушителя: _________\n➡️ Время: _________\n➡️ Доказательства: _________'}",
+                              color=self.color)
         cv = View(); cv.add_item(CloseButton())
         await t.send(embed=embed)
         if mention: await t.send(f"🔔 {mention}")
@@ -292,22 +264,15 @@ class MainView(View):
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
-    
     try:
         for guild in bot.guilds:
             try:
                 await bot.tree.sync(guild=guild)
                 print(f"✅ Синхронизировано для {guild.name}")
-            except Exception as e:
-                print(f"⚠️ Ошибка синхронизации для {guild.name}: {e}")
-        
+            except: pass
         synced = await bot.tree.sync()
         print(f"✅ Глобально синхронизировано {len(synced)} команд")
-        for cmd in synced:
-            print(f"   /{cmd.name}")
-    except Exception as e:
-        log_error(e, "sync")
-
+    except Exception as e: log_error(e, "sync")
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
@@ -412,18 +377,24 @@ async def cleanup(i: discord.Interaction):
 @bot.tree.command(name="commands", description="Список команд для Security & Admins (приватная ветка)")
 async def commands_cmd(i: discord.Interaction):
     if not is_support(i.channel) or not (any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) or i.user.id == AUTHORIZED_USER_ID):
-        await i.response.send_message("❌ Нет прав", ephemeral=True); return
+        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    # Сразу отвечаем, чтобы не было таймаута
+    await i.response.defer(ephemeral=True)
     
     global COMMANDS_THREAD_ID
     channel = i.channel
     
+    # Проверяем существующую ветку
     for t in channel.threads:
         if t.name == "📋-commands-security-admins":
             COMMANDS_THREAD_ID = t.id
-            await i.response.send_message(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
+            await i.followup.send(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
             return
     
     try:
+        # Создаём приватную ветку
         t = await channel.create_thread(
             name="📋-commands-security-admins",
             auto_archive_duration=10080,
@@ -431,8 +402,10 @@ async def commands_cmd(i: discord.Interaction):
         )
         COMMANDS_THREAD_ID = t.id
         
+        # Добавляем пользователя
         await t.add_user(i.user)
         
+        # Добавляем роли поддержки
         for rid in SUPPORT_ROLE_IDS:
             role = i.guild.get_role(rid)
             if role:
@@ -440,12 +413,14 @@ async def commands_cmd(i: discord.Interaction):
                     try: await t.add_user(member)
                     except: pass
         
+        # Добавляем бота
         await t.add_user(i.guild.me)
         
-        # ✅ Небольшая задержка перед отправкой
+        # Ждём немного
         await asyncio.sleep(1)
         
-        await t.send(embed=discord.Embed(
+        # Отправляем сообщение
+        embed = discord.Embed(
             title="📋 Commands for Security & Admins",
             description=(
                 "/setup_tickets — меню тикетов (owner)\n"
@@ -458,10 +433,14 @@ async def commands_cmd(i: discord.Interaction):
                 "• Удаляется при закрытии\n"
                 "• База данных\n"
                 "• Защита от фальшивых тикетов"
-            ), color=discord.Color.blue()
-        ))
-        await i.response.send_message(f"✅ Приватная ветка создана: {t.mention}", ephemeral=True)
+            ),
+            color=discord.Color.blue()
+        )
+        await t.send(embed=embed)
+        
+        await i.followup.send(f"✅ Приватная ветка создана: {t.mention}", ephemeral=True)
+        
     except Exception as e:
-        await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 bot.run(TOKEN)
