@@ -327,6 +327,39 @@ async def on_ready():
     except Exception as e:
         log_error(e, "on_ready sync")
 
+    # ========== УДАЛЕНИЕ ДУБЛИРУЮЩИХСЯ ГОЛОСОВЫХ КАНАЛОВ ==========
+    for guild in bot.guilds:
+        for channel in guild.channels:
+            if channel.id in SUPPORT_CHANNEL_IDS:
+                # Собираем ID всех активных тикетов
+                active_thread_ids = {thread.id for thread in channel.threads if "тикет" in thread.name}
+                
+                # Проверяем голосовые каналы в той же категории
+                category = channel.category
+                if category:
+                    for vc in category.voice_channels:
+                        # Если голосовой канал не привязан к активному тикету — удаляем
+                        found = False
+                        for thread_id in active_thread_ids:
+                            if thread_id in voice_channels and voice_channels[thread_id] == vc.id:
+                                found = True
+                                break
+                            # Также проверяем по названию
+                            if thread_id in ticket_owners:
+                                thread = bot.get_channel(thread_id)
+                                if thread and thread.name[:80] in vc.name:
+                                    voice_channels[thread_id] = vc.id
+                                    found = True
+                                    break
+                        
+                        if not found and "🔊" in vc.name:
+                            try:
+                                await vc.delete()
+                                print(f"🗑️ Удалён дублирующий голосовой канал: {vc.name}")
+                            except:
+                                pass
+    # =============================================================
+
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -366,23 +399,17 @@ class ConfirmCloseView(View):
     def __init__(self, interaction):
         super().__init__(timeout=30)
         self.interaction = interaction
-        self.confirmed = False
 
     @discord.ui.button(label="✅ Да, закрыть", style=discord.ButtonStyle.danger, row=0)
     async def confirm(self, interaction: discord.Interaction, button: Button):
-        self.confirmed = True
         await interaction.response.defer()
-        self.stop()
-        await self.execute_close()
+        await self.execute_close(interaction)
 
     @discord.ui.button(label="❌ Нет, отмена", style=discord.ButtonStyle.secondary, row=0)
     async def cancel(self, interaction: discord.Interaction, button: Button):
-        self.confirmed = False
-        self.stop()
         await interaction.response.send_message("❌ Закрытие отменено", ephemeral=True)
 
-    async def execute_close(self):
-        interaction = self.interaction
+    async def execute_close(self, interaction: discord.Interaction):
         try:
             if interaction.channel.id == RULES_THREAD_ID:
                 await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
@@ -519,12 +546,10 @@ class SubcategoryView(View):
         self.parent_interaction = parent_interaction
         self.main_type = main_type
         self.color = color
-        self.is_disabled = False
 
     async def create_sub_ticket(self, interaction: discord.Interaction, subcategory: str):
         await interaction.response.defer(ephemeral=True)
 
-        self.is_disabled = True
         for child in self.children:
             child.disabled = True
         try:
@@ -561,29 +586,44 @@ class SubcategoryView(View):
 
         await thread.edit(archived=False, locked=False)
 
+        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ (если нет дубля) ==========
         try:
             guild = interaction.guild
             category = interaction.channel.category
-            voice_channel = await guild.create_voice_channel(
-                name=f"🔊 {thread_name[:80]}",
-                category=category,
-                user_limit=10,
-                reason=f"Тикет от {interaction.user.name}"
-            )
-            voice_channels[thread.id] = voice_channel.id
             
-            for role_id in SUPPORT_ROLE_IDS:
-                role = guild.get_role(role_id)
-                if role:
-                    await voice_channel.set_permissions(role, connect=True, speak=True)
+            # Проверяем, нет ли уже голосового канала с таким названием
+            existing_vc = None
+            if category:
+                for vc in category.voice_channels:
+                    if thread_name[:80] in vc.name:
+                        existing_vc = vc
+                        break
             
-            await voice_channel.set_permissions(interaction.user, connect=True, speak=True)
-            await voice_channel.set_permissions(guild.default_role, connect=False)
-            
-            await thread.send(f"🔊 Создан голосовой канал: {voice_channel.mention}")
+            if existing_vc:
+                voice_channels[thread.id] = existing_vc.id
+                await thread.send(f"🔊 Используется существующий голосовой канал: {existing_vc.mention}")
+            else:
+                voice_channel = await guild.create_voice_channel(
+                    name=f"🔊 {thread_name[:80]}",
+                    category=category,
+                    user_limit=10,
+                    reason=f"Тикет от {interaction.user.name}"
+                )
+                voice_channels[thread.id] = voice_channel.id
+                
+                for role_id in SUPPORT_ROLE_IDS:
+                    role = guild.get_role(role_id)
+                    if role:
+                        await voice_channel.set_permissions(role, connect=True, speak=True)
+                
+                await voice_channel.set_permissions(interaction.user, connect=True, speak=True)
+                await voice_channel.set_permissions(guild.default_role, connect=False)
+                
+                await thread.send(f"🔊 Создан голосовой канал: {voice_channel.mention}")
         except Exception as e:
             log_error(e, "create_voice_channel")
             await thread.send(f"⚠️ Не удалось создать голосовой канал: {e}")
+        # ==========================================
 
         if self.main_type == "жалоба":
             mention_text = None
