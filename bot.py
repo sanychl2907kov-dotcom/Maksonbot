@@ -45,6 +45,7 @@ TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
 
 RULES_THREAD_ID = None
 voice_channels = {}
+COMMANDS_THREAD_ID = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -313,7 +314,7 @@ async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
 
 @bot.event
 async def on_ready():
-    global RULES_THREAD_ID
+    global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ Бот {bot.user} запущен")
     
     total, open_tickets = get_all_ticket_stats()
@@ -334,6 +335,9 @@ async def on_ready():
                     if thread.name == "📋-правила-поддержки":
                         RULES_THREAD_ID = thread.id
                         print(f"✅ Найдена публичная ветка с правилами: {thread.name}")
+                    if thread.name == "📋-commands-security-admins":
+                        COMMANDS_THREAD_ID = thread.id
+                        print(f"✅ Найдена ветка с командами: {thread.name}")
                     if "тикет" in thread.name:
                         for vc in guild.voice_channels:
                             if thread.name[:80] in vc.name:
@@ -378,7 +382,7 @@ class ConfirmCloseView(View):
 
     async def execute_close(self, interaction: discord.Interaction):
         try:
-            if interaction.channel.id == RULES_THREAD_ID:
+            if interaction.channel.id == RULES_THREAD_ID or interaction.channel.id == COMMANDS_THREAD_ID:
                 await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
 
@@ -719,6 +723,95 @@ class MainView(View):
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
 
+# ========== КОМАНДА /commands ==========
+@bot.tree.command(name="commands", description="Создать ветку со списком команд для модераторов и админов")
+async def commands_slash(interaction: discord.Interaction):
+    if not is_support_channel(interaction.channel):
+        await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
+        return
+
+    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
+    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    global COMMANDS_THREAD_ID
+    channel = interaction.channel
+
+    # Проверяем, существует ли уже ветка
+    for thread in channel.threads:
+        if thread.name == "📋-commands-security-admins":
+            COMMANDS_THREAD_ID = thread.id
+            await interaction.followup.send(f"✅ Ветка с командами уже существует: {thread.mention}")
+            return
+
+    try:
+        thread = await channel.create_thread(
+            name="📋-commands-security-admins",
+            auto_archive_duration=10080,
+            type=discord.ChannelType.public_thread
+        )
+
+        COMMANDS_THREAD_ID = thread.id
+
+        await thread.add_user(interaction.user)
+
+        # Права: все могут читать, писать — только админы и бот
+        await thread.set_permissions(
+            interaction.guild.default_role,
+            send_messages=False,
+            read_messages=True,
+            view_channel=True
+        )
+
+        for role_id in SUPPORT_ROLE_IDS:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                await thread.set_permissions(
+                    role,
+                    send_messages=True,
+                    read_messages=True,
+                    view_channel=True
+                )
+
+        await thread.set_permissions(
+            interaction.guild.me,
+            send_messages=True,
+            read_messages=True,
+            view_channel=True
+        )
+
+        embed = discord.Embed(
+            title="📋 **Commands for Security & Admins**",
+            description=(
+                "**🔹 Available slash commands:**\n\n"
+                "`/setup_tickets` — Create ticket menu (owner only)\n"
+                "`/timeout` — Give timeout to a user (mods + admins)\n"
+                "`/send_rules` — Send rules to current thread (mods + admins)\n"
+                "`/cleanup` — Remove orphaned voice channels (mods + admins)\n"
+                "`/commands` — Show this commands list (mods + admins)\n\n"
+                "**🔸 Button in ticket menu:**\n\n"
+                "`📋 Rules` — Create/update public rules thread (owner only)\n\n"
+                "**🔹 Auto features:**\n\n"
+                "• Voice channel created with each ticket\n"
+                "• Voice channel deleted when ticket closed\n"
+                "• Database stores all tickets\n"
+                "• Fake ticket detection (4 fast closes → timeout 5 min)\n"
+                "• Ticket close confirmation\n\n"
+                "---\n"
+                "🔒 **Only Security & Admins can write here.**"
+            ),
+            color=discord.Color.blue()
+        )
+
+        await thread.send(embed=embed)
+        await interaction.followup.send(f"✅ Ветка с командами создана: {thread.mention}")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка при создании ветки: {e}", ephemeral=True)
+
 # ========== КОМАНДА /cleanup ==========
 @bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
 async def cleanup_slash(interaction: discord.Interaction):
@@ -726,7 +819,8 @@ async def cleanup_slash(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
         return
 
-    if interaction.user.id != AUTHORIZED_USER_ID:
+    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
+    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID:
         await interaction.response.send_message("❌ Нет прав", ephemeral=True)
         return
 
@@ -735,18 +829,15 @@ async def cleanup_slash(interaction: discord.Interaction):
     deleted = 0
     guild = interaction.guild
 
-    # Собираем ID всех активных веток
     active_thread_ids = set()
     for channel in guild.channels:
         if channel.id in SUPPORT_CHANNEL_IDS:
             for thread in channel.threads:
-                if "тикет" in thread.name or thread.name == "📋-правила-поддержки":
+                if "тикет" in thread.name or thread.name in ["📋-правила-поддержки", "📋-commands-security-admins"]:
                     active_thread_ids.add(thread.id)
 
-    # Проверяем голосовые каналы
     for channel in guild.channels:
         if isinstance(channel, discord.VoiceChannel) and "🔊" in channel.name and channel.category:
-            # Проверяем, принадлежит ли канал категории поддержки
             is_support = False
             for sc_id in SUPPORT_CHANNEL_IDS:
                 sc = guild.get_channel(sc_id)
@@ -757,7 +848,6 @@ async def cleanup_slash(interaction: discord.Interaction):
             if not is_support:
                 continue
 
-            # Проверяем, привязан ли канал к активной ветке
             found = False
             for tid in active_thread_ids:
                 thread = guild.get_channel(tid)
