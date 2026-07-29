@@ -327,7 +327,6 @@ async def on_ready():
     except Exception as e:
         log_error(e, "on_ready sync")
 
-    # Восстанавливаем голосовые каналы
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -385,8 +384,6 @@ class ConfirmCloseView(View):
     async def execute_close(self):
         interaction = self.interaction
         try:
-            await interaction.followup.send("✅ Тикет закрывается...")
-
             if interaction.channel.id == RULES_THREAD_ID:
                 await interaction.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
@@ -442,6 +439,7 @@ class ConfirmCloseView(View):
             ticket_owners.pop(interaction.channel.id, None)
             ticket_creation_time.pop(interaction.channel.id, None)
 
+            await interaction.followup.send("✅ Тикет успешно закрыт")
             try:
                 await interaction.channel.delete()
             except:
@@ -475,7 +473,6 @@ class RulesButton(Button):
 
         channel = interaction.channel
 
-        # Проверяем, существует ли уже ветка с правилами
         for thread in channel.threads:
             if thread.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = thread.id
@@ -483,7 +480,6 @@ class RulesButton(Button):
                 await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {thread.mention}")
                 return
 
-        # Создаём ПУБЛИЧНУЮ ветку
         thread = await channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
@@ -492,10 +488,8 @@ class RulesButton(Button):
 
         RULES_THREAD_ID = thread.id
 
-        # Добавляем тебя в ветку
         await thread.add_user(interaction.user)
 
-        # Настраиваем права: все могут читать, но писать — только ты и бот
         overwrite_everyone = discord.PermissionOverwrite()
         overwrite_everyone.send_messages = False
         overwrite_everyone.read_message_history = True
@@ -567,7 +561,6 @@ class SubcategoryView(View):
 
         await thread.edit(archived=False, locked=False)
 
-        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ ==========
         try:
             guild = interaction.guild
             category = interaction.channel.category
@@ -591,7 +584,6 @@ class SubcategoryView(View):
         except Exception as e:
             log_error(e, "create_voice_channel")
             await thread.send(f"⚠️ Не удалось создать голосовой канал: {e}")
-        # ==========================================
 
         if self.main_type == "жалоба":
             mention_text = None
