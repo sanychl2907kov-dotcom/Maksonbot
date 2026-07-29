@@ -441,15 +441,12 @@ class ConfirmCloseView(View):
         except Exception as e:
             await handle_error(interaction, e)
 
-# ========== КНОПКА ЗАКРЫТИЯ (ИСПРАВЛЕНА) ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        # ✅ Сразу отвечаем, чтобы избежать таймаута
         await interaction.response.defer(ephemeral=True)
-        
         await interaction.followup.send(
             "⚠️ **Вы уверены, что хотите закрыть этот тикет?**\nЭто действие нельзя отменить.",
             view=ConfirmCloseView(interaction),
@@ -723,6 +720,63 @@ class MainView(View):
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer()
         await interaction.followup.send("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
+
+# ========== КОМАНДА /cleanup ==========
+@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы (доступно админам и модераторам)")
+async def cleanup_slash(interaction: discord.Interaction):
+    if not is_support_channel(interaction.channel):
+        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+        return
+
+    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
+    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    deleted = 0
+    guild = interaction.guild
+    
+    # Получаем все активные ID тикетов (веток)
+    active_thread_ids = set()
+    for channel in guild.channels:
+        if channel.id in SUPPORT_CHANNEL_IDS:
+            for thread in channel.threads:
+                if "тикет" in thread.name or thread.name == "📋-правила-поддержки":
+                    active_thread_ids.add(thread.id)
+
+    # Проверяем голосовые каналы
+    for channel in guild.channels:
+        if isinstance(channel, discord.VoiceChannel) and channel.category:
+            # Проверяем, принадлежит ли канал категории поддержки
+            is_support_category = False
+            for support_channel_id in SUPPORT_CHANNEL_IDS:
+                support_channel = guild.get_channel(support_channel_id)
+                if support_channel and support_channel.category == channel.category:
+                    is_support_category = True
+                    break
+            
+            if is_support_category and "🔊" in channel.name:
+                # Проверяем, привязан ли канал к активной ветке
+                found = False
+                for thread_id in active_thread_ids:
+                    thread = guild.get_channel(thread_id)
+                    if thread and thread.name[:80] in channel.name:
+                        found = True
+                        break
+                    if thread_id in voice_channels and voice_channels[thread_id] == channel.id:
+                        found = True
+                        break
+                
+                if not found:
+                    try:
+                        await channel.delete()
+                        deleted += 1
+                    except:
+                        pass
+
+    await interaction.followup.send(f"🗑️ Удалено {deleted} осиротевших голосовых каналов.")
 
 # ========== КОМАНДА /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
