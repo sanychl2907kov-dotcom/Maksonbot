@@ -409,7 +409,7 @@ async def cleanup(i: discord.Interaction):
                 except: pass
     await i.followup.send(f"🗑️ Удалено {deleted} каналов")
 
-@bot.tree.command(name="commands", description="Список команд для Security & Admins")
+@bot.tree.command(name="commands", description="Список команд для Security & Admins (приватная ветка)")
 async def commands_cmd(i: discord.Interaction):
     if not is_support(i.channel) or not (any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) or i.user.id == AUTHORIZED_USER_ID):
         await i.response.send_message("❌ Нет прав", ephemeral=True); return
@@ -424,31 +424,32 @@ async def commands_cmd(i: discord.Interaction):
             await i.response.send_message(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
             return
     
-    # Создаём ветку
+    # Создаём ПРИВАТНУЮ ветку
     try:
         t = await channel.create_thread(
             name="📋-commands-security-admins",
             auto_archive_duration=10080,
-            type=discord.ChannelType.public_thread
+            type=discord.ChannelType.private_thread  # ✅ ПРИВАТНАЯ
         )
         COMMANDS_THREAD_ID = t.id
+        
+        # Добавляем создателя
         await t.add_user(i.user)
         
-        # Настраиваем права через overwrites
-        await t.edit(overwrites={
-            i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
-            i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-        })
-        
-        # Добавляем права для ролей поддержки
+        # Добавляем все роли поддержки
         for rid in SUPPORT_ROLE_IDS:
             role = i.guild.get_role(rid)
             if role:
-                # Создаём новый словарь overwrites с добавлением роли
-                new_overwrites = t.overwrites.copy()
-                new_overwrites[role] = discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-                await t.edit(overwrites=new_overwrites)
+                for member in role.members:
+                    try:
+                        await t.add_user(member)
+                    except:
+                        pass
         
+        # Добавляем бота (он и так есть, но на всякий случай)
+        await t.add_user(i.guild.me)
+        
+        # Отправляем сообщение
         await t.send(embed=discord.Embed(
             title="📋 Commands for Security & Admins",
             description=(
@@ -464,7 +465,7 @@ async def commands_cmd(i: discord.Interaction):
                 "• Защита от фальшивых тикетов"
             ), color=discord.Color.blue()
         ))
-        await i.response.send_message(f"✅ Ветка создана: {t.mention}", ephemeral=True)
+        await i.response.send_message(f"✅ Приватная ветка создана: {t.mention}", ephemeral=True)
     except Exception as e:
         await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
