@@ -713,32 +713,29 @@ class MainView(View):
 
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def main_complaint(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await interaction.followup.send("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
+        await interaction.response.send_message("📋 **Выберите причину жалобы:**", view=ComplaintView(interaction), ephemeral=True)
 
     @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await interaction.followup.send("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
+        await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
 
 # ========== КОМАНДА /cleanup ==========
-@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы (доступно админам и модераторам)")
+@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
 async def cleanup_slash(interaction: discord.Interaction):
     if not is_support_channel(interaction.channel):
-        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+        await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
         return
 
-    is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
-    if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
 
     deleted = 0
     guild = interaction.guild
-    
-    # Получаем все активные ID тикетов (веток)
+
+    # Собираем ID всех активных веток
     active_thread_ids = set()
     for channel in guild.channels:
         if channel.id in SUPPORT_CHANNEL_IDS:
@@ -748,38 +745,37 @@ async def cleanup_slash(interaction: discord.Interaction):
 
     # Проверяем голосовые каналы
     for channel in guild.channels:
-        if isinstance(channel, discord.VoiceChannel) and channel.category:
+        if isinstance(channel, discord.VoiceChannel) and "🔊" in channel.name and channel.category:
             # Проверяем, принадлежит ли канал категории поддержки
-            is_support_category = False
-            for support_channel_id in SUPPORT_CHANNEL_IDS:
-                support_channel = guild.get_channel(support_channel_id)
-                if support_channel and support_channel.category == channel.category:
-                    is_support_category = True
+            is_support = False
+            for sc_id in SUPPORT_CHANNEL_IDS:
+                sc = guild.get_channel(sc_id)
+                if sc and sc.category == channel.category:
+                    is_support = True
                     break
-            
-            if is_support_category and "🔊" in channel.name:
-                # Проверяем, привязан ли канал к активной ветке
-                found = False
-                for thread_id in active_thread_ids:
-                    thread = guild.get_channel(thread_id)
-                    if thread and thread.name[:80] in channel.name:
-                        found = True
-                        break
-                    if thread_id in voice_channels and voice_channels[thread_id] == channel.id:
-                        found = True
-                        break
-                
-                if not found:
-                    try:
-                        await channel.delete()
-                        deleted += 1
-                    except:
-                        pass
+
+            if not is_support:
+                continue
+
+            # Проверяем, привязан ли канал к активной ветке
+            found = False
+            for tid in active_thread_ids:
+                thread = guild.get_channel(tid)
+                if thread and (thread.name[:80] in channel.name or tid in voice_channels and voice_channels[tid] == channel.id):
+                    found = True
+                    break
+
+            if not found:
+                try:
+                    await channel.delete()
+                    deleted += 1
+                except:
+                    pass
 
     await interaction.followup.send(f"🗑️ Удалено {deleted} осиротевших голосовых каналов.")
 
 # ========== КОМАНДА /timeout ==========
-@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
+@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю")
 async def timeout_slash(
     interaction: discord.Interaction,
     пользователь: discord.Member,
@@ -787,41 +783,26 @@ async def timeout_slash(
     причина: str = "Нарушение правил поддержки"
 ):
     if not is_support_channel(interaction.channel):
-        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
-        return
-
-    if not interaction.guild:
-        await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
+        await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
         return
 
     is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
     if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
         return
 
-    if пользователь == bot.user:
-        await interaction.response.send_message("❌ Нельзя выдать тайм-аут боту", ephemeral=True)
+    if пользователь == bot.user or пользователь == interaction.user:
+        await interaction.response.send_message("❌ Нельзя выдать тайм-аут боту или себе", ephemeral=True)
         return
 
-    if пользователь == interaction.user:
-        await interaction.response.send_message("❌ Нельзя выдать тайм-аут самому себе", ephemeral=True)
-        return
-
-    if время > 40320:
-        await interaction.response.send_message("❌ Максимальное время — 40320 минут (28 дней).", ephemeral=True)
-        return
-    if время < 1:
-        await interaction.response.send_message("❌ Минимальное время — 1 минута.", ephemeral=True)
+    if not (1 <= время <= 40320):
+        await interaction.response.send_message("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
 
     try:
-        await пользователь.timeout(
-            discord.utils.utcnow() + timedelta(minutes=время),
-            reason=причина
-        )
-
+        await пользователь.timeout(discord.utils.utcnow() + timedelta(minutes=время), reason=причина)
         embed = discord.Embed(
             title="⏰ **Тайм-аут выдан**",
             description=(
@@ -837,57 +818,50 @@ async def timeout_slash(
         await handle_error(interaction, e)
 
 # ========== КОМАНДА /send_rules ==========
-@bot.tree.command(name="send_rules", description="Отправить правила в текущую ветку (доступно модераторам и админам)")
+@bot.tree.command(name="send_rules", description="Отправить правила в текущую ветку")
 async def send_rules_slash(
     interaction: discord.Interaction,
     правило: str = None,
     пользователь: discord.Member = None
 ):
     if not is_support_channel(interaction.channel):
-        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
-        return
-
-    if not interaction.guild:
-        await interaction.response.send_message("❌ Эта команда работает только на сервере", ephemeral=True)
+        await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
         return
 
     is_moderator = any(role.id in SUPPORT_ROLE_IDS for role in interaction.user.roles)
     if not is_moderator and interaction.user.id != AUTHORIZED_USER_ID:
-        await interaction.response.send_message("❌ У вас нет доступа к этой команде", ephemeral=True)
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.response.send_message("❌ Команда работает только внутри ветки", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
 
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.followup.send("❌ Эта команда работает только внутри ветки (тикета или правил).", ephemeral=True)
-        return
-
     if правило:
         rules_list = [r.strip() for r in правило.split(",")]
-        found = []
-        not_found = []
-        for r in rules_list:
-            if r in RULES_DICT:
-                found.append(r)
-            else:
-                not_found.append(r)
+        found = [r for r in rules_list if r in RULES_DICT]
+        not_found = [r for r in rules_list if r not in RULES_DICT]
+
         if not found:
             embed = discord.Embed(
                 title="❌ Ошибка",
-                description=f"Правила с номерами `{', '.join(not_found)}` не найдены.\nДоступные номера: {', '.join(RULES_DICT.keys())}",
+                description=f"Правила не найдены. Доступные номера: {', '.join(RULES_DICT.keys())}",
                 color=discord.Color.red()
             )
             await interaction.followup.send(embed=embed)
             return
+
         user_mention = f"{пользователь.mention}" if пользователь else ""
         await send_rules_to_thread(interaction.channel, ",".join(found), user_mention)
-        await interaction.followup.send(f"✅ Правила отправлены в текущую ветку: {interaction.channel.mention}")
+        await interaction.followup.send(f"✅ Правила отправлены в {interaction.channel.mention}")
     else:
         if interaction.channel.name == "📋-правила-поддержки":
             global RULES_THREAD_ID
             RULES_THREAD_ID = interaction.channel.id
             await send_rules_to_thread(interaction.channel)
-            await interaction.followup.send(f"✅ Правила обновлены в текущей ветке: {interaction.channel.mention}")
+            await interaction.followup.send(f"✅ Правила обновлены")
         else:
             support_channel = interaction.channel.parent
             if support_channel and is_support_channel(support_channel):
@@ -898,7 +872,7 @@ async def send_rules_slash(
                         break
                 if rules_thread:
                     await send_rules_to_thread(rules_thread)
-                    await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {rules_thread.mention}")
+                    await interaction.followup.send(f"✅ Правила обновлены в существующей ветке")
                 else:
                     rules_thread = await support_channel.create_thread(
                         name="📋-правила-поддержки",
@@ -909,19 +883,19 @@ async def send_rules_slash(
                     await rules_thread.add_user(interaction.user)
                     await asyncio.sleep(1)
                     await send_rules_to_thread(rules_thread)
-                    await interaction.followup.send(f"✅ Создана новая публичная ветка с правилами: {rules_thread.mention}")
+                    await interaction.followup.send(f"✅ Создана новая публичная ветка с правилами")
             else:
-                await interaction.followup.send("❌ Не удалось определить канал поддержки.", ephemeral=True)
+                await interaction.followup.send("❌ Не удалось определить канал поддержки", ephemeral=True)
 
 # ========== КОМАНДА /setup_tickets ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets_slash(interaction: discord.Interaction):
     if not is_support_channel(interaction.channel):
-        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
+        await interaction.response.send_message("❌ Команда доступна только в канале поддержки", ephemeral=True)
         return
 
     if interaction.user.id != AUTHORIZED_USER_ID:
-        await interaction.response.send_message("❌ Нет доступа", ephemeral=True)
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
         return
 
     global last_menu_message_id
