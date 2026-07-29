@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from flask import Flask
 import threading
 
-# ========== НАСТРОЙКИ И ЛОГИ ==========
+# ========== НАСТРОЙКИ ==========
 logging.basicConfig(filename='errors.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 def log_error(e, ctx=""): logging.error(f"{ctx}: {e}"); print(f"❌ {e}")
 
@@ -425,41 +425,47 @@ async def commands_cmd(i: discord.Interaction):
             return
     
     # Создаём ветку
-    t = await channel.create_thread(
-        name="📋-commands-security-admins",
-        auto_archive_duration=10080,
-        type=discord.ChannelType.public_thread
-    )
-    COMMANDS_THREAD_ID = t.id
-    await t.add_user(i.user)
-    
-    # Настраиваем права через overwrites
-    await t.edit(overwrites={
-        i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
-        i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-    })
-    
-    # Добавляем права для ролей поддержки
-    for rid in SUPPORT_ROLE_IDS:
-        role = i.guild.get_role(rid)
-        if role:
-            await t.edit(overwrites={**t.overwrites, role: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)})
-    
-    await t.send(embed=discord.Embed(
-        title="📋 Commands for Security & Admins",
-        description=(
-            "/setup_tickets — меню тикетов (owner)\n"
-            "/timeout — тайм-аут (mods+admins)\n"
-            "/send_rules — правила (mods+admins)\n"
-            "/cleanup — очистка голосовых каналов (mods+admins)\n"
-            "/commands — этот список (mods+admins)\n\n"
-            "📋 Правила — кнопка в меню (owner)\n\n"
-            "• Голосовой канал с каждым тикетом\n"
-            "• Удаляется при закрытии\n"
-            "• База данных\n"
-            "• Защита от фальшивых тикетов"
-        ), color=discord.Color.blue()
-    ))
-    await i.response.send_message(f"✅ Ветка создана: {t.mention}", ephemeral=True)
+    try:
+        t = await channel.create_thread(
+            name="📋-commands-security-admins",
+            auto_archive_duration=10080,
+            type=discord.ChannelType.public_thread
+        )
+        COMMANDS_THREAD_ID = t.id
+        await t.add_user(i.user)
+        
+        # Настраиваем права через overwrites
+        await t.edit(overwrites={
+            i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
+            i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+        })
+        
+        # Добавляем права для ролей поддержки
+        for rid in SUPPORT_ROLE_IDS:
+            role = i.guild.get_role(rid)
+            if role:
+                # Создаём новый словарь overwrites с добавлением роли
+                new_overwrites = t.overwrites.copy()
+                new_overwrites[role] = discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+                await t.edit(overwrites=new_overwrites)
+        
+        await t.send(embed=discord.Embed(
+            title="📋 Commands for Security & Admins",
+            description=(
+                "/setup_tickets — меню тикетов (owner)\n"
+                "/timeout — тайм-аут (mods+admins)\n"
+                "/send_rules — правила (mods+admins)\n"
+                "/cleanup — очистка голосовых каналов (mods+admins)\n"
+                "/commands — этот список (mods+admins)\n\n"
+                "📋 Правила — кнопка в меню (owner)\n\n"
+                "• Голосовой канал с каждым тикетом\n"
+                "• Удаляется при закрытии\n"
+                "• База данных\n"
+                "• Защита от фальшивых тикетов"
+            ), color=discord.Color.blue()
+        ))
+        await i.response.send_message(f"✅ Ветка создана: {t.mention}", ephemeral=True)
+    except Exception as e:
+        await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
 bot.run(TOKEN)
