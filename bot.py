@@ -147,16 +147,7 @@ async def auto_delete_ticket(thread_id, channel_id):
 
 # ========== ФУНКЦИЯ ДЛЯ ОТПРАВКИ ПРАВИЛ ==========
 async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
-    async for msg in thread.history(limit=30):
-        if msg.author == bot.user:
-            if msg.components:
-                continue
-            if msg.content and ("🔧 **Управление:**" in msg.content or "🔒 Закрыть тикет" in msg.content):
-                continue
-            try:
-                await msg.delete()
-            except:
-                pass
+    """Отправляет правила в указанный тред. НЕ удаляет старые сообщения, НЕ трогает кнопки."""
     
     if rule_numbers:
         rule_list = [r.strip() for r in rule_numbers.split(",")]
@@ -558,7 +549,7 @@ class TicketView(View):
                 )
 
             close_view = View()
-            close_view.add_item(CloseButton())  # Только кнопка закрытия
+            close_view.add_item(CloseButton())
 
             await thread.send(embed=embed)
             if mention_text:
