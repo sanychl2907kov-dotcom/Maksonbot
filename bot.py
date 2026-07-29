@@ -6,10 +6,23 @@ import random
 import asyncio
 import os
 import sqlite3
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask
 import threading
+
+# ========== ЛОГИРОВАНИЕ ОШИБОК ==========
+logging.basicConfig(
+    filename='errors.log',
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+def log_error(error, context=""):
+    logging.error(f"{context}: {error}")
+    print(f"❌ Ошибка: {error} (записано в errors.log)")
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -77,14 +90,28 @@ def close_ticket_in_db(thread_id, closed_by):
     conn.commit()
     conn.close()
 
-def get_user_tickets(user_id):
+def get_user_tickets(user_id, active_only=False):
     conn = sqlite3.connect('tickets.db')
     c = conn.cursor()
-    c.execute('''SELECT ticket_type, subcategory, created_at, status FROM tickets
-                 WHERE user_id = ? ORDER BY created_at DESC''', (str(user_id),))
+    if active_only:
+        c.execute('''SELECT thread_id, ticket_type, subcategory, created_at, status FROM tickets
+                     WHERE user_id = ? AND status = 'open' ORDER BY created_at DESC''', (str(user_id),))
+    else:
+        c.execute('''SELECT thread_id, ticket_type, subcategory, created_at, status FROM tickets
+                     WHERE user_id = ? ORDER BY created_at DESC''', (str(user_id),))
     rows = c.fetchall()
     conn.close()
     return rows
+
+def get_all_ticket_stats():
+    conn = sqlite3.connect('tickets.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM tickets")
+    total = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM tickets WHERE status = 'open'")
+    open_tickets = c.fetchone()[0]
+    conn.close()
+    return total, open_tickets
 
 init_db()
 # ==========================================
@@ -140,6 +167,7 @@ def is_support_channel(channel):
     return False
 
 async def handle_error(interaction, error, custom_message=None):
+    log_error(error, f"Interaction: {interaction.command.name if interaction.command else 'unknown'}")
     try:
         error_text = str(error)
         if "403" in error_text or "Forbidden" in error_text:
@@ -160,6 +188,7 @@ async def handle_error(interaction, error, custom_message=None):
 
 @bot.event
 async def on_command_error(ctx, error):
+    log_error(error, f"Command: {ctx.command.name if ctx.command else 'unknown'}")
     if isinstance(error, commands.CommandNotFound):
         return
     await ctx.send(f"⚠️ Ошибка: {str(error)[:100]}")
@@ -276,7 +305,9 @@ async def send_rules_to_thread(thread, rule_numbers=None, user_mention=None):
 async def on_ready():
     global RULES_THREAD_ID
     print(f"✅ Бот {bot.user} запущен")
-    print(f"📊 Создано: {ticket_stats['created']}, Закрыто: {ticket_stats['closed']}")
+    
+    total, open_tickets = get_all_ticket_stats()
+    print(f"📊 Всего тикетов: {total}, Открыто: {open_tickets}")
     
     try:
         synced = await bot.tree.sync()
@@ -284,8 +315,9 @@ async def on_ready():
         for cmd in synced:
             print(f"   /{cmd.name}")
     except Exception as e:
-        print(f"❌ Ошибка синхронизации: {e}")
+        log_error(e, "on_ready sync")
 
+    # Восстанавливаем голосовые каналы
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
@@ -293,6 +325,12 @@ async def on_ready():
                     if thread.name == "📋-правила-поддержки":
                         RULES_THREAD_ID = thread.id
                         print(f"✅ Найдена ветка с правилами: {thread.name}")
+                    if "тикет" in thread.name:
+                        # Проверяем, есть ли голосовой канал с таким же названием
+                        for vc in guild.voice_channels:
+                            if thread.name[:80] in vc.name:
+                                voice_channels[thread.id] = vc.id
+                                print(f"🔊 Восстановлен голосовой канал для {thread.name}")
 
 @bot.event
 async def on_message(message):
@@ -313,16 +351,31 @@ async def on_message(message):
         except:
             pass
 
-    # ✅ НЕТ ОТВЕТОВ НА УПОМИНАНИЯ
     await bot.process_commands(message)
 
-class CloseButton(Button):
-    def __init__(self):
-        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
+# ========== ПОДТВЕРЖДЕНИЕ ЗАКРЫТИЯ ==========
+class ConfirmCloseView(View):
+    def __init__(self, interaction):
+        super().__init__(timeout=30)
+        self.interaction = interaction
+        self.confirmed = False
 
-    async def callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="✅ Да, закрыть", style=discord.ButtonStyle.danger, row=0)
+    async def confirm(self, interaction: discord.Interaction, button: Button):
+        self.confirmed = True
+        await interaction.response.defer()
+        self.stop()
+        await self.execute_close()
+
+    @discord.ui.button(label="❌ Нет, отмена", style=discord.ButtonStyle.secondary, row=0)
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        self.confirmed = False
+        self.stop()
+        await interaction.response.send_message("❌ Закрытие отменено", ephemeral=True)
+
+    async def execute_close(self):
+        interaction = self.interaction
         try:
-            await interaction.response.defer(ephemeral=False)
             await interaction.followup.send("✅ Тикет закрывается...")
 
             if interaction.channel.id == RULES_THREAD_ID:
@@ -378,7 +431,6 @@ class CloseButton(Button):
                 del voice_channels[interaction.channel.id]
             
             ticket_owners.pop(interaction.channel.id, None)
-            ticket_stats["closed"] += 1
             ticket_creation_time.pop(interaction.channel.id, None)
 
             try:
@@ -387,6 +439,18 @@ class CloseButton(Button):
                 pass
         except Exception as e:
             await handle_error(interaction, e)
+# =============================================
+
+class CloseButton(Button):
+    def __init__(self):
+        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "⚠️ **Вы уверены, что хотите закрыть этот тикет?**\nЭто действие нельзя отменить.",
+            view=ConfirmCloseView(interaction),
+            ephemeral=True
+        )
 
 class RulesButton(Button):
     def __init__(self):
@@ -495,6 +559,7 @@ class SubcategoryView(View):
             
             await thread.send(f"🔊 Создан голосовой канал: {voice_channel.mention}")
         except Exception as e:
+            log_error(e, "create_voice_channel")
             await thread.send(f"⚠️ Не удалось создать голосовой канал: {e}")
         # ==========================================
 
@@ -523,7 +588,6 @@ class SubcategoryView(View):
 
         ticket_owners[thread.id] = interaction.user.id
         ticket_creation_time[thread.id] = time.time()
-        ticket_stats["created"] += 1
 
         add_ticket_to_db(thread.id, interaction.user.id, interaction.user.name, self.main_type, subcategory)
 
@@ -623,25 +687,26 @@ class MainView(View):
     async def main_suggestion(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message("💡 **Выберите тип предложения:**", view=SuggestionView(interaction), ephemeral=True)
 
-@bot.command(name="my_tickets")
-async def my_tickets(ctx):
-    if not is_support_channel(ctx.channel):
-        await ctx.send("❌ Этот канал не для тикетов")
+# ========== /my_tickets (слеш-команда) ==========
+@bot.tree.command(name="my_tickets", description="Показать историю ваших тикетов")
+async def my_tickets_slash(interaction: discord.Interaction):
+    if not is_support_channel(interaction.channel):
+        await interaction.response.send_message("❌ Эта команда работает только в канале поддержки", ephemeral=True)
         return
 
-    user_tickets = get_user_tickets(ctx.author.id)
+    user_tickets = get_user_tickets(interaction.user.id, active_only=True)
     if not user_tickets:
-        await ctx.send("📋 У вас нет активных тикетов")
+        await interaction.response.send_message("📋 У вас нет активных тикетов", ephemeral=True)
         return
 
     embed = discord.Embed(
-        title="📋 Ваши тикеты",
-        description="\n".join([f"**{row[0]}** → {row[1]} (создан: <t:{int(datetime.fromisoformat(row[2]).timestamp())}:R>, статус: {row[3]})" for row in user_tickets[:10]]),
+        title="📋 Ваши активные тикеты",
+        description="\n".join([f"<#{row[0]}> — **{row[1]}** → {row[2]} (создан: <t:{int(datetime.fromisoformat(row[3]).timestamp())}:R>)" for row in user_tickets[:10]]),
         color=discord.Color.blue()
     )
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ========== КОМАНДА /timeout ==========
+# ========== /timeout ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (доступно админам и модераторам)")
 async def timeout_slash(
     interaction: discord.Interaction,
@@ -696,12 +761,10 @@ async def timeout_slash(
             color=discord.Color.red()
         )
         await interaction.followup.send(embed=embed)
-
-        print(f"⏰ {interaction.user} выдал тайм-аут {пользователь} на {время} минут. Причина: {причина}")
     except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при выдаче тайм-аута: {e}", ephemeral=True)
+        await handle_error(interaction, e)
 
-# ========== КОМАНДА /send_rules ==========
+# ========== /send_rules ==========
 @bot.tree.command(name="send_rules", description="Отправить правила в текущую ветку (доступно модераторам и админам)")
 async def send_rules_slash(
     interaction: discord.Interaction,
@@ -778,7 +841,7 @@ async def send_rules_slash(
             else:
                 await interaction.followup.send("❌ Не удалось определить канал поддержки.", ephemeral=True)
 
-# ========== КОМАНДА /setup_tickets ==========
+# ========== /setup_tickets ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets_slash(interaction: discord.Interaction):
     if not is_support_channel(interaction.channel):
