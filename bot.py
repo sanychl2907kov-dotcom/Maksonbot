@@ -38,7 +38,6 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
@@ -61,7 +60,6 @@ def db_close(thread_id, closed_by):
               (datetime.now().isoformat(), str(closed_by), str(thread_id)))
     conn.commit()
 
-# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners, ticket_creation_time, fake_counter, fake_last_time = {}, {}, {}, {}
 ticket_closed, voice_channels = set(), {}
 last_menu_message_id = {}
@@ -134,22 +132,22 @@ async def send_rules(thread, rules=None, mention=None):
         return
     await thread.send(embed=discord.Embed(title="📋 Правила техподдержки", description="...", color=discord.Color.gold()))
 
-# ========== КНОПКИ ==========
 class CloseButton(Button):
     def __init__(self): super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
     async def callback(self, i: discord.Interaction):
         try:
+            await i.response.defer(ephemeral=True)
             if i.channel.id in (RULES_THREAD_ID, COMMANDS_THREAD_ID):
-                await i.response.send_message("❌ Эту ветку нельзя закрыть", ephemeral=True); return
+                await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True); return
             if i.channel.id in ticket_closed:
-                await i.response.send_message("❌ Уже закрыт", ephemeral=True); return
+                await i.followup.send("❌ Уже закрыт", ephemeral=True); return
             if not (any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) or i.user.id == AUTHORIZED_USER_ID or i.user.guild_permissions.administrator):
-                await i.response.send_message("❌ Нет прав", ephemeral=True); return
+                await i.followup.send("❌ Нет прав", ephemeral=True); return
             author_id = ticket_owners.get(i.channel.id)
             if not author_id:
-                await i.response.send_message("❌ Тикет не найден", ephemeral=True); ticket_closed.add(i.channel.id); return
+                await i.followup.send("❌ Тикет не найден", ephemeral=True); ticket_closed.add(i.channel.id); return
             if i.user.id != author_id and not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles):
-                await i.response.send_message("❌ Не ваш тикет", ephemeral=True); return
+                await i.followup.send("❌ Не ваш тикет", ephemeral=True); return
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
                 if ct and time.time() - ct < 10:
@@ -161,10 +159,10 @@ class CloseButton(Button):
                         m = i.guild.get_member(uid)
                         if m:
                             await m.timeout(discord.utils.utcnow() + timedelta(seconds=FAKE_TICKET_TIMEOUT))
-                            await i.response.send_message(f"⏰ {m.mention} тайм-аут {FAKE_TICKET_TIMEOUT//60} мин", ephemeral=True)
+                            await i.followup.send(f"⏰ {m.mention} тайм-аут {FAKE_TICKET_TIMEOUT//60} мин", ephemeral=True)
                             fake_counter[uid] = 0
                     else:
-                        await i.response.send_message(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
+                        await i.followup.send(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
             ticket_closed.add(i.channel.id)
             db_close(i.channel.id, i.user.id)
             if i.channel.id in voice_channels:
@@ -173,11 +171,11 @@ class CloseButton(Button):
                 del voice_channels[i.channel.id]
             ticket_owners.pop(i.channel.id, None)
             ticket_creation_time.pop(i.channel.id, None)
-            await i.response.send_message("✅ Тикет закрыт", ephemeral=True)
+            await i.followup.send("✅ Тикет закрыт", ephemeral=True)
             try: await i.channel.delete()
             except: pass
         except Exception as e:
-            await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 class RulesButton(Button):
     def __init__(self): super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
@@ -208,17 +206,18 @@ class SubButton(Button):
         self.sub, self.typ, self.color, self.i = sub, typ, color, i
     async def callback(self, i: discord.Interaction):
         try:
+            await i.response.defer(ephemeral=True)
             if not is_support(i.channel):
-                await i.response.send_message("❌ Не тот канал", ephemeral=True); return
+                await i.followup.send("❌ Не тот канал", ephemeral=True); return
             if not i.channel.permissions_for(i.guild.me).create_private_threads:
-                await i.response.send_message("❌ Нет прав", ephemeral=True); return
+                await i.followup.send("❌ Нет прав", ephemeral=True); return
             uid = i.user.id
             cnt = sum(1 for t in i.channel.threads if f"-{uid}-" in t.name or t.name.endswith(f"-{uid}"))
             if cnt >= MAX_TICKETS_PER_USER:
-                await i.response.send_message(f"❌ Лимит {MAX_TICKETS_PER_USER}", ephemeral=True); return
+                await i.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER}", ephemeral=True); return
             name = f"тикет-{i.user.name}-{uid}-{self.typ}-{self.sub}"
             if any(t.name == name for t in i.channel.threads):
-                await i.response.send_message("❌ Уже есть", ephemeral=True); return
+                await i.followup.send("❌ Уже есть", ephemeral=True); return
             t = await i.channel.create_thread(name=name, auto_archive_duration=1440, type=discord.ChannelType.private_thread)
             await t.edit(archived=False, locked=False)
             await create_voice_channel(i, name)
@@ -243,9 +242,9 @@ class SubButton(Button):
             await t.send(embed=embed)
             if mention: await t.send(f"🔔 {mention}")
             await t.send("🔧 **Управление:**", view=cv)
-            await i.response.send_message(f"✅ Тикет создан: {t.mention}", ephemeral=True)
+            await i.followup.send(f"✅ Тикет создан: {t.mention}", ephemeral=True)
         except Exception as e:
-            await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 class SubcategoryView(View):
     def __init__(self, i, typ, color, labels):
@@ -257,14 +256,15 @@ class MainView(View):
     def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def comp(self, i: discord.Interaction, b: Button):
+        await i.response.defer(ephemeral=True)
         labels = [("😡 Оскорбление/грубость", "оскорбление"), ("📢 Флуд/спам", "флуд"), ("🎙️ Голосовой канал", "голосовой-канал"), ("👮 Жалоба на админа", "жалоба-на-админа"), ("❓ Другое", "другое")]
-        await i.response.send_message("📋 **Выберите причину жалобы:**", view=SubcategoryView(i, "жалоба", discord.Color.red(), labels), ephemeral=True)
+        await i.followup.send("📋 **Выберите причину жалобы:**", view=SubcategoryView(i, "жалоба", discord.Color.red(), labels), ephemeral=True)
     @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
     async def sugg(self, i: discord.Interaction, b: Button):
+        await i.response.defer(ephemeral=True)
         labels = [("💡 Идея", "идея"), ("🔧 Функционал", "функционал"), ("🎨 Дизайн", "дизайн"), ("❓ Другое", "другое")]
-        await i.response.send_message("💡 **Выберите тип предложения:**", view=SubcategoryView(i, "предложение", discord.Color.gold(), labels), ephemeral=True)
+        await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView(i, "предложение", discord.Color.gold(), labels), ephemeral=True)
 
-# ========== КОМАНДЫ ==========
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
