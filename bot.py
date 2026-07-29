@@ -512,6 +512,28 @@ class RulesButton(Button):
 
             await thread.add_user(interaction.user)
 
+            # Настройка прав через set_permissions
+            await thread.set_permissions(
+                interaction.guild.default_role,
+                send_messages=False,
+                read_messages=True,
+                view_channel=True
+            )
+
+            await thread.set_permissions(
+                interaction.user,
+                send_messages=True,
+                read_messages=True,
+                view_channel=True
+            )
+
+            await thread.set_permissions(
+                interaction.guild.me,
+                send_messages=True,
+                read_messages=True,
+                view_channel=True
+            )
+
             await asyncio.sleep(1)
 
             await send_rules_to_thread(thread)
