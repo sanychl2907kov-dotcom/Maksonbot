@@ -331,20 +331,16 @@ async def on_ready():
     for guild in bot.guilds:
         for channel in guild.channels:
             if channel.id in SUPPORT_CHANNEL_IDS:
-                # Собираем ID всех активных тикетов
                 active_thread_ids = {thread.id for thread in channel.threads if "тикет" in thread.name}
                 
-                # Проверяем голосовые каналы в той же категории
                 category = channel.category
                 if category:
                     for vc in category.voice_channels:
-                        # Если голосовой канал не привязан к активному тикету — удаляем
                         found = False
                         for thread_id in active_thread_ids:
                             if thread_id in voice_channels and voice_channels[thread_id] == vc.id:
                                 found = True
                                 break
-                            # Также проверяем по названию
                             if thread_id in ticket_owners:
                                 thread = bot.get_channel(thread_id)
                                 if thread and thread.name[:80] in vc.name:
@@ -358,7 +354,6 @@ async def on_ready():
                                 print(f"🗑️ Удалён дублирующий голосовой канал: {vc.name}")
                             except:
                                 pass
-    # =============================================================
 
     for guild in bot.guilds:
         for channel in guild.channels:
@@ -490,14 +485,14 @@ class RulesButton(Button):
         super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != AUTHORIZED_USER_ID:
-            await interaction.response.send_message("❌ У вас нет доступа к этой кнопке", ephemeral=True)
-            return
-
+        # ✅ Сразу отвечаем, чтобы избежать таймаута
         await interaction.response.defer(ephemeral=False)
 
-        global RULES_THREAD_ID
+        if interaction.user.id != AUTHORIZED_USER_ID:
+            await interaction.followup.send("❌ У вас нет доступа к этой кнопке", ephemeral=True)
+            return
 
+        global RULES_THREAD_ID
         channel = interaction.channel
 
         for thread in channel.threads:
@@ -507,38 +502,42 @@ class RulesButton(Button):
                 await interaction.followup.send(f"✅ Правила обновлены в существующей ветке: {thread.mention}")
                 return
 
-        thread = await channel.create_thread(
-            name="📋-правила-поддержки",
-            auto_archive_duration=10080,
-            type=discord.ChannelType.public_thread
-        )
+        # Создаём ПУБЛИЧНУЮ ветку
+        try:
+            thread = await channel.create_thread(
+                name="📋-правила-поддержки",
+                auto_archive_duration=10080,
+                type=discord.ChannelType.public_thread
+            )
 
-        RULES_THREAD_ID = thread.id
+            RULES_THREAD_ID = thread.id
 
-        await thread.add_user(interaction.user)
+            await thread.add_user(interaction.user)
 
-        overwrite_everyone = discord.PermissionOverwrite()
-        overwrite_everyone.send_messages = False
-        overwrite_everyone.read_message_history = True
-        overwrite_everyone.view_channel = True
-        await thread.edit(overwrites={interaction.guild.default_role: overwrite_everyone})
+            overwrite_everyone = discord.PermissionOverwrite()
+            overwrite_everyone.send_messages = False
+            overwrite_everyone.read_message_history = True
+            overwrite_everyone.view_channel = True
+            await thread.edit(overwrites={interaction.guild.default_role: overwrite_everyone})
 
-        overwrite_owner = discord.PermissionOverwrite()
-        overwrite_owner.send_messages = True
-        overwrite_owner.read_message_history = True
-        overwrite_owner.view_channel = True
-        await thread.edit(overwrites={interaction.user: overwrite_owner})
+            overwrite_owner = discord.PermissionOverwrite()
+            overwrite_owner.send_messages = True
+            overwrite_owner.read_message_history = True
+            overwrite_owner.view_channel = True
+            await thread.edit(overwrites={interaction.user: overwrite_owner})
 
-        overwrite_bot = discord.PermissionOverwrite()
-        overwrite_bot.send_messages = True
-        overwrite_bot.read_message_history = True
-        overwrite_bot.view_channel = True
-        await thread.edit(overwrites={interaction.guild.me: overwrite_bot})
+            overwrite_bot = discord.PermissionOverwrite()
+            overwrite_bot.send_messages = True
+            overwrite_bot.read_message_history = True
+            overwrite_bot.view_channel = True
+            await thread.edit(overwrites={interaction.guild.me: overwrite_bot})
 
-        await asyncio.sleep(1)
+            await asyncio.sleep(1)
 
-        await send_rules_to_thread(thread)
-        await interaction.followup.send(f"✅ Публичная ветка с правилами создана: {thread.mention}")
+            await send_rules_to_thread(thread)
+            await interaction.followup.send(f"✅ Публичная ветка с правилами создана: {thread.mention}")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка при создании ветки: {e}", ephemeral=True)
 
 class SubcategoryView(View):
     def __init__(self, parent_interaction, main_type, color):
@@ -586,12 +585,11 @@ class SubcategoryView(View):
 
         await thread.edit(archived=False, locked=False)
 
-        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ (если нет дубля) ==========
+        # ========== СОЗДАЁМ ГОЛОСОВОЙ КАНАЛ ==========
         try:
             guild = interaction.guild
             category = interaction.channel.category
             
-            # Проверяем, нет ли уже голосового канала с таким названием
             existing_vc = None
             if category:
                 for vc in category.voice_channels:
@@ -623,7 +621,6 @@ class SubcategoryView(View):
         except Exception as e:
             log_error(e, "create_voice_channel")
             await thread.send(f"⚠️ Не удалось создать голосовой канал: {e}")
-        # ==========================================
 
         if self.main_type == "жалоба":
             mention_text = None
