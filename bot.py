@@ -80,6 +80,43 @@ last_menu_message_id = {}
 RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
 
+# ========== ГЛОБАЛЬНЫЙ RULES_DICT ==========
+RULES_DICT = {
+    "1.1": "Правила обязательны для всех.",
+    "1.2": "Игнорирование = предупреждение → закрытие.",
+    "1.3": "Администрация толкует правила.",
+    "2.1": "Оскорбления, грубость, агрессия запрещены.",
+    "2.2": "Первое нарушение — предупреждение.",
+    "2.3": "Повторное — закрытие ветки.",
+    "3.1": "Флуд, спам, провокации запрещены.",
+    "3.2": "Такие сообщения → ветка закрывается сразу.",
+    "3.3": "Пишите по делу.",
+    "4.1": "Указывайте ник, суть, доказательства.",
+    "4.2": "Не по теме → ветка закрыта.",
+    "4.3": "Одна проблема — один тикет.",
+    "5.1": "Ветки приватные.",
+    "5.2": "Передача содержимого третьим лицам запрещена.",
+    "5.3": "Нарушение → закрытие ветки.",
+    "6.1": "Автор отвечает за достоверность.",
+    "6.2": "Ложные жалобы → закрытие.",
+    "6.3": "Администрация может закрыть ветку без объяснения.",
+    "6.4": "Фальшивый тикет → предупреждение.",
+    "6.5": "4 фальшивых тикета → тайм-аут 5 мин.",
+    "7.1": "Ответ в течение 30 минут.",
+    "7.2": "24 часа без ответа → авто-закрытие.",
+    "7.3": "Можно запросить продление.",
+    "8.1": "Жалобы подтверждаются доказательствами.",
+    "8.2": "Подделка → закрытие (повтор → предупреждение).",
+    "8.3": "Без доказательств — решение откладывается.",
+    "9.1": "Не требовать немедленного ответа.",
+    "9.2": "Вопросы только в тикете.",
+    "9.3": "Грубость → предупреждение, повтор → закрытие.",
+    "10.1": "Тикет закрывается после решения или по инициативе автора.",
+    "10.2": "Восстановление невозможно.",
+    "10.3": "Новый тикет — новое обращение."
+}
+
+# ========== ГИФКИ ==========
 MORNING_GIFS = [
     "https://media.tenor.com/Rq2k3c5xY6gAAAAC/good-morning.gif",
     "https://media.tenor.com/5z1h7k9W3jUAAAAC/morning.gif",
@@ -96,7 +133,7 @@ async def create_voice_channel(interaction, thread_name):
         for vc in category.voice_channels:
             if thread_name[:80] in vc.name:
                 voice_channels[interaction.channel.id] = vc.id
-                return  # ✅ убрано сообщение
+                return
         vc = await interaction.guild.create_voice_channel(name=f"🔊 {thread_name[:80]}", category=category, user_limit=10)
         voice_channels[interaction.channel.id] = vc.id
         for role_id in SUPPORT_ROLE_IDS:
@@ -104,44 +141,10 @@ async def create_voice_channel(interaction, thread_name):
             if role: await vc.set_permissions(role, connect=True, speak=True)
         await vc.set_permissions(interaction.user, connect=True, speak=True)
         await vc.set_permissions(interaction.guild.default_role, connect=False)
-        # ✅ сообщение о создании удалено
-    except Exception as e: log_error(e, "voice_channel")
+    except Exception as e:
+        log_error(e, "voice_channel")
 
 async def send_rules(thread, rules=None, mention=None):
-    RULES_DICT = {
-        "1.1": "Правила обязательны для всех.",
-        "1.2": "Игнорирование = предупреждение → закрытие.",
-        "1.3": "Администрация толкует правила.",
-        "2.1": "Оскорбления, грубость, агрессия запрещены.",
-        "2.2": "Первое нарушение — предупреждение.",
-        "2.3": "Повторное — закрытие ветки.",
-        "3.1": "Флуд, спам, провокации запрещены.",
-        "3.2": "Такие сообщения → ветка закрывается сразу.",
-        "3.3": "Пишите по делу.",
-        "4.1": "Указывайте ник, суть, доказательства.",
-        "4.2": "Не по теме → ветка закрыта.",
-        "4.3": "Одна проблема — один тикет.",
-        "5.1": "Ветки приватные.",
-        "5.2": "Передача содержимого третьим лицам запрещена.",
-        "5.3": "Нарушение → закрытие ветки.",
-        "6.1": "Автор отвечает за достоверность.",
-        "6.2": "Ложные жалобы → закрытие.",
-        "6.3": "Администрация может закрыть ветку без объяснения.",
-        "6.4": "Фальшивый тикет → предупреждение.",
-        "6.5": "4 фальшивых тикета → тайм-аут 5 мин.",
-        "7.1": "Ответ в течение 30 минут.",
-        "7.2": "24 часа без ответа → авто-закрытие.",
-        "7.3": "Можно запросить продление.",
-        "8.1": "Жалобы подтверждаются доказательствами.",
-        "8.2": "Подделка → закрытие (повтор → предупреждение).",
-        "8.3": "Без доказательств — решение откладывается.",
-        "9.1": "Не требовать немедленного ответа.",
-        "9.2": "Вопросы только в тикете.",
-        "9.3": "Грубость → предупреждение, повтор → закрытие.",
-        "10.1": "Тикет закрывается после решения или по инициативе автора.",
-        "10.2": "Восстановление невозможно.",
-        "10.3": "Новый тикет — новое обращение."
-    }
     if rules:
         found = [f"**{r}.** {RULES_DICT[r]}" for r in [x.strip() for x in rules.split(",")] if r in RULES_DICT]
         if not found:
@@ -164,7 +167,9 @@ class CloseButton(Button):
                 await i.followup.send("❌ Нет прав", ephemeral=True); return
             author_id = ticket_owners.get(i.channel.id)
             if not author_id:
-                await i.followup.send("❌ Тикет не найден", ephemeral=True); ticket_closed.add(i.channel.id); return
+                await i.followup.send("❌ Тикет не найден", ephemeral=True)
+                ticket_closed.add(i.channel.id)
+                return
             if i.user.id != author_id and not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles):
                 await i.followup.send("❌ Не ваш тикет", ephemeral=True); return
             if i.user.id == author_id:
@@ -287,7 +292,7 @@ class MainView(View):
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
-    print(f"✅ {bot.user} запущен")
+    print(f"✅ Бот {bot.user} запущен")
     
     await bot.wait_until_ready()
     try:
@@ -297,7 +302,6 @@ async def on_ready():
                 print(f"✅ Синхронизировано для {guild.name}")
             except Exception as e:
                 print(f"⚠️ Ошибка для {guild.name}: {e}")
-        
         synced = await bot.tree.sync()
         print(f"✅ Глобально синхронизировано {len(synced)} команд")
         for cmd in synced:
@@ -323,18 +327,14 @@ async def on_message(message):
 
     content = message.content.lower()
     
-    # ========== ОТВЕТ НА "ДОБРОЕ УТРО" ==========
-    if "доброе утро" in content:
+    if "доброе утро" in content and MORNING_GIFS:
         gif = random.choice(MORNING_GIFS)
         await message.channel.send(gif)
         return
-    # ==========================================
 
-    # ========== РЕАКЦИЯ 🌸 ==========
-    if message.channel.id == TARGET_CHANNEL_ID or message.author.id in TARGET_USER_IDS or any(w in message.content.lower() for w in TRIGGER_WORDS):
+    if message.channel.id == TARGET_CHANNEL_ID or message.author.id in TARGET_USER_IDS or any(w in content for w in TRIGGER_WORDS):
         try: await message.add_reaction("🌸")
         except: pass
-    # =================================
 
     await bot.process_commands(message)
 
@@ -344,8 +344,11 @@ async def setup(i: discord.Interaction):
         await i.response.send_message("❌ Нет доступа", ephemeral=True); return
     lid = last_menu_message_id.get(i.channel.id)
     if lid:
-        try: await i.channel.fetch_message(lid).delete()
-        except: pass
+        try:
+            old = await i.channel.fetch_message(lid)
+            await old.delete()
+        except:
+            pass
     v = MainView()
     if i.user.id == AUTHORIZED_USER_ID: v.add_item(RulesButton())
     await i.response.send_message(embed=discord.Embed(title="🎫 Техническая поддержка", description="Выберите тип обращения:", color=discord.Color.blue()), view=v)
@@ -419,9 +422,21 @@ async def cleanup(i: discord.Interaction):
                 if (sc := i.guild.get_channel(sid)) and sc.category == ch.category:
                     sc = True; break
             if not sc: continue
-            if not any(tid in voice_channels and voice_channels[tid] == ch.id or (t := i.guild.get_channel(tid)) and t.name[:80] in ch.name for tid in active):
-                try: await ch.delete(); deleted += 1
-                except: pass
+            found = False
+            for tid in active:
+                if tid in voice_channels and voice_channels[tid] == ch.id:
+                    found = True
+                    break
+                t = i.guild.get_channel(tid)
+                if t and t.name[:80] in ch.name:
+                    found = True
+                    break
+            if not found:
+                try:
+                    await ch.delete()
+                    deleted += 1
+                except:
+                    pass
     await i.followup.send(f"🗑️ Удалено {deleted} каналов")
 
 @bot.tree.command(name="commands", description="Список команд для Security & Admins (приватная ветка)")
