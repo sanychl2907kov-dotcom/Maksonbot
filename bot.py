@@ -38,7 +38,7 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== Flask-заглушка для Render ==========
+# ========== Flask-заглушка ==========
 app = Flask('')
 @app.route('/')
 def home():
@@ -80,6 +80,12 @@ last_menu_message_id = {}
 RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
 
+MORNING_GIFS = [
+    "https://media.tenor.com/Rq2k3c5xY6gAAAAC/good-morning.gif",
+    "https://media.tenor.com/5z1h7k9W3jUAAAAC/morning.gif",
+    "https://media.tenor.com/6i2d4Y7bN8UAAAAC/good-morning.gif"
+]
+
 def is_support(channel):
     return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
 
@@ -90,8 +96,7 @@ async def create_voice_channel(interaction, thread_name):
         for vc in category.voice_channels:
             if thread_name[:80] in vc.name:
                 voice_channels[interaction.channel.id] = vc.id
-                await interaction.channel.send(f"🔊 Используется существующий голосовой канал: {vc.mention}")
-                return
+                return  # ✅ убрано сообщение
         vc = await interaction.guild.create_voice_channel(name=f"🔊 {thread_name[:80]}", category=category, user_limit=10)
         voice_channels[interaction.channel.id] = vc.id
         for role_id in SUPPORT_ROLE_IDS:
@@ -99,7 +104,7 @@ async def create_voice_channel(interaction, thread_name):
             if role: await vc.set_permissions(role, connect=True, speak=True)
         await vc.set_permissions(interaction.user, connect=True, speak=True)
         await vc.set_permissions(interaction.guild.default_role, connect=False)
-        await interaction.channel.send(f"🔊 Создан голосовой канал: {vc.mention}")
+        # ✅ сообщение о создании удалено
     except Exception as e: log_error(e, "voice_channel")
 
 async def send_rules(thread, rules=None, mention=None):
@@ -312,11 +317,26 @@ async def on_ready():
                             if t.name[:80] in vc.name: voice_channels[t.id] = vc.id
 
 @bot.event
-async def on_message(m):
-    if m.channel.id == TARGET_CHANNEL_ID or m.author.id in TARGET_USER_IDS or any(w in m.content.lower() for w in TRIGGER_WORDS):
-        try: await m.add_reaction("🌸")
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    content = message.content.lower()
+    
+    # ========== ОТВЕТ НА "ДОБРОЕ УТРО" ==========
+    if "доброе утро" in content:
+        gif = random.choice(MORNING_GIFS)
+        await message.channel.send(gif)
+        return
+    # ==========================================
+
+    # ========== РЕАКЦИЯ 🌸 ==========
+    if message.channel.id == TARGET_CHANNEL_ID or message.author.id in TARGET_USER_IDS or any(w in message.content.lower() for w in TRIGGER_WORDS):
+        try: await message.add_reaction("🌸")
         except: pass
-    await bot.process_commands(m)
+    # =================================
+
+    await bot.process_commands(message)
 
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup(i: discord.Interaction):
