@@ -38,6 +38,18 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ========== Flask-заглушка для Render ==========
+app = Flask('')
+@app.route('/')
+def home():
+    return "Бот MAKSON работает 24/7!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=10000)
+
+threading.Thread(target=run_flask, daemon=True).start()
+# =============================================
+
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
@@ -272,10 +284,8 @@ async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
     
-    # Жёсткая синхронизация
     await bot.wait_until_ready()
     try:
-        # Синхронизация для каждого сервера
         for guild in bot.guilds:
             try:
                 await bot.tree.sync(guild=guild)
@@ -283,7 +293,6 @@ async def on_ready():
             except Exception as e:
                 print(f"⚠️ Ошибка для {guild.name}: {e}")
         
-        # Глобальная синхронизация
         synced = await bot.tree.sync()
         print(f"✅ Глобально синхронизировано {len(synced)} команд")
         for cmd in synced:
