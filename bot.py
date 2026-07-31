@@ -528,11 +528,10 @@ async def on_message(message):
 # ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
-    # ✅ УБИРАЕМ ephemeral=True — теперь меню видно всем
-    await i.response.defer(ephemeral=False)
+    await i.response.defer(ephemeral=False)  # ✅ НЕ эфемерное
     
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
-        await i.followup.send("❌ Нет доступа", ephemeral=True)
+        await i.followup.send("❌ Нет доступа")  # ✅ НЕ эфемерное
         return
 
     lid = last_menu_message_id.get(i.channel.id)
@@ -563,7 +562,7 @@ async def setup_tickets(i: discord.Interaction):
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
     embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
 
-    await i.followup.send(embed=embed, view=view)
+    await i.followup.send(embed=embed, view=view)  # ✅ НЕ эфемерное
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки (только для модераторов)")
