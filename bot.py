@@ -318,19 +318,17 @@ class RulesButton(Button):
         super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, i: discord.Interaction):
-        if i.user.id != AUTHORIZED_USER_ID:
-            await i.response.send_message("❌ Нет доступа", ephemeral=True)
-            return
-
         global RULES_THREAD_ID
         channel = i.channel
 
+        # Проверяем, существует ли уже ветка
         for t in channel.threads:
             if t.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = t.id
                 await i.response.send_message(f"📋 Перейдите в ветку с правилами: {t.mention}", ephemeral=True)
                 return
 
+        # Создаём публичную ветку
         try:
             t = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -339,11 +337,6 @@ class RulesButton(Button):
             )
             RULES_THREAD_ID = t.id
             await t.add_user(i.user)
-            await t.edit(overwrites={
-                i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
-                i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
-                i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-            })
             await asyncio.sleep(1)
             await send_rules(t)
             await i.response.send_message(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
@@ -559,8 +552,7 @@ async def setup_tickets(i: discord.Interaction):
             pass
 
     view = MainView()
-    if i.user.id == AUTHORIZED_USER_ID:
-        view.add_item(RulesButton())
+    view.add_item(RulesButton())  # ✅ Теперь доступна всем
 
     embed = discord.Embed(
         title="🎫 **Техническая поддержка**",
@@ -655,11 +647,6 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
                 )
                 RULES_THREAD_ID = t.id
                 await t.add_user(i.user)
-                await t.edit(overwrites={
-                    i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
-                    i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
-                    i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-                })
                 await asyncio.sleep(1)
                 await send_rules(t)
                 await i.followup.send(f"✅ Создана новая ветка правил: {t.mention}")
@@ -725,7 +712,9 @@ async def commands_cmd(i: discord.Interaction):
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
         await i.response.send_message("❌ Нет прав", ephemeral=True)
-        return    await i.response.defer(ephemeral=True)
+        return
+
+    await i.response.defer(ephemeral=True)
 
     global COMMANDS_THREAD_ID
     channel = i.channel
