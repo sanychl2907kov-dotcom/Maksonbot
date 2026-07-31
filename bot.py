@@ -402,7 +402,6 @@ async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
     
-    # Синхронизация команд
     await bot.wait_until_ready()
     try:
         for guild in bot.guilds:
@@ -418,7 +417,6 @@ async def on_ready():
     except Exception as e:
         log_error(e, "sync")
 
-    # Восстановление состояния
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
@@ -435,7 +433,6 @@ async def on_ready():
                             for vc in g.voice_channels:
                                 if t.name[:80] in vc.name:
                                     voice_channels[t.id] = vc.id
-                            # Восстанавливаем кнопку
                             try:
                                 async for msg in t.history(limit=10):
                                     if msg.author == bot.user and msg.components:
@@ -485,11 +482,25 @@ async def setup_tickets(i: discord.Interaction):
         view.add_item(RulesButton())
 
     embed = discord.Embed(
-        title="🎫 Техническая поддержка",
-        description="Выберите тип обращения:",
+        title="🎫 **Техническая поддержка**",
+        description=(
+            "**Выберите тип обращения:**\n\n"
+            "🔴 **Жалоба** — сообщить о нарушении или проблеме\n"
+            "🟢 **Предложение** — поделиться идеей или улучшением\n"
+            "📋 **Правила** — ознакомиться с правилами сервера\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "🕒 **Ответ в течение 30 минут**\n"
+            "👮 **Модераторы всегда на связи**"
+        ),
         color=discord.Color.blue()
     )
-    await i.response.send_message(embed=embed, view=view)
+    embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
+
+    # ✅ КАРТИНКА С ГИТХАБА
+    file = discord.File("banner.jpg", filename="banner.jpg")
+    embed.set_image(url="attachment://banner.jpg")
+
+    await i.response.send_message(file=file, embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут")
@@ -594,7 +605,6 @@ async def cleanup(i: discord.Interaction):
     deleted = 0
     for ch in i.guild.channels:
         if isinstance(ch, discord.VoiceChannel) and "🔊" in ch.name and ch.category:
-            # Проверяем, принадлежит ли канал категории поддержки
             sc = False
             for sid in SUPPORT_CHANNEL_IDS:
                 if (sc_ch := i.guild.get_channel(sid)) and sc_ch.category == ch.category:
