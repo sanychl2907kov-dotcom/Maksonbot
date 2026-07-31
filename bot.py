@@ -570,14 +570,10 @@ async def setup_tickets(i: discord.Interaction):
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
 
-    # ✅ КАРТИНКА С ГИТХАБА (banner.png)
-    try:
-        file = discord.File("banner.png", filename="banner.png")
-        embed.set_image(url="attachment://banner.png")
-        await i.response.send_message(file=file, embed=embed, view=view)
-    except:
-        await i.response.send_message(embed=embed, view=view)
+    # ✅ КАРТИНКА С ГИТХАБА (ПРЯМАЯ ССЫЛКА)
+    embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
 
+    await i.response.send_message(embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут")
