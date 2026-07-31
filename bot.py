@@ -26,6 +26,7 @@ SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
 AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
+MAX_TICKETS_GLOBAL = 20  # ✅ максимальное количество открытых тикетов
 TICKET_LIFETIME = 10800
 FAKE_TICKET_TIMEOUT = 300
 MAX_FAKE_TICKETS = 4
@@ -39,6 +40,29 @@ intents.message_content = True
 intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ========== ЗАЩИТА ОТ СПАМА ==========
+ticket_create_timestamps = []
+SPAM_WINDOW = 10  # 10 секунд
+MAX_CREATES_PER_WINDOW = 5
+spam_blocked_until = 0
+
+def check_spam():
+    global spam_blocked_until
+    now = time.time()
+    if spam_blocked_until > now:
+        return False, f"⏳ Подождите {int(spam_blocked_until - now)} секунд, слишком много тикетов создаётся."
+    
+    # Очищаем старые записи
+    global ticket_create_timestamps
+    ticket_create_timestamps = [t for t in ticket_create_timestamps if t > now - SPAM_WINDOW]
+    
+    if len(ticket_create_timestamps) >= MAX_CREATES_PER_WINDOW:
+        spam_blocked_until = now + 30
+        return False, f"⏳ Слишком много тикетов за {SPAM_WINDOW} секунд. Пауза на 30 секунд."
+    
+    ticket_create_timestamps.append(now)
+    return True, None
 
 # ========== Flask-заглушка ==========
 app = Flask('')
@@ -222,7 +246,6 @@ class CloseButton(Button):
             ticket_closed.add(i.channel.id)
             db_close(i.channel.id, i.user.id)
 
-            # Удаляем голосовой канал
             thread_name = i.channel.name
             for vc in i.guild.voice_channels:
                 if thread_name[:80] in vc.name:
@@ -257,15 +280,12 @@ class RulesButton(Button):
         global RULES_THREAD_ID
         channel = i.channel
 
-        # Проверяем, существует ли уже ветка
         for t in channel.threads:
             if t.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = t.id
-                # ✅ Просто перенаправляем в существующую ветку
                 await i.response.send_message(f"📋 Перейдите в ветку с правилами: {t.mention}", ephemeral=True)
                 return
 
-        # Если нет — создаём
         try:
             t = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -294,6 +314,12 @@ class SubButton(Button):
 
     async def callback(self, i: discord.Interaction):
         try:
+            # ✅ Защита от спама
+            ok, msg = check_spam()
+            if not ok:
+                await i.response.send_message(msg, ephemeral=True)
+                return
+
             await i.response.defer(ephemeral=True)
 
             if not is_support(i.channel):
@@ -308,6 +334,12 @@ class SubButton(Button):
             cnt = sum(1 for t in i.channel.threads if f"-{uid}-" in t.name or t.name.endswith(f"-{uid}"))
             if cnt >= MAX_TICKETS_PER_USER:
                 await i.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER} тикета", ephemeral=True)
+                return
+
+            # ✅ Глобальный лимит
+            total_open = sum(1 for t in i.channel.threads if "тикет" in t.name)
+            if total_open >= MAX_TICKETS_GLOBAL:
+                await i.followup.send(f"❌ Достигнут лимит открытых тикетов ({MAX_TICKETS_GLOBAL}). Подождите, пока закроют часть.", ephemeral=True)
                 return
 
             name = f"тикет-{i.user.name}-{uid}-{self.typ}-{self.sub}"
@@ -367,6 +399,7 @@ class SubButton(Button):
 
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "SubButton")
 
 class SubcategoryView(View):
     def __init__(self, typ, color, labels):
@@ -695,7 +728,8 @@ async def commands_cmd(i: discord.Interaction):
                 "• Голосовой канал с каждым тикетом\n"
                 "• Удаляется при закрытии\n"
                 "• База данных\n"
-                "• Защита от фальшивых тикетов"
+                "• Защита от фальшивых тикетов\n"
+                "• Защита от массового спама тикетами"
             ),
             color=discord.Color.blue()
         ))
