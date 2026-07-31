@@ -152,6 +152,7 @@ async def send_rules(thread, rules=None, mention=None):
         return
     await thread.send(embed=discord.Embed(title="📋 Правила техподдержки", description="...", color=discord.Color.gold()))
 
+# ========== КНОПКА ЗАКРЫТИЯ ==========
 class CloseButton(Button):
     def __init__(self): super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
     async def callback(self, i: discord.Interaction):
@@ -186,15 +187,17 @@ class CloseButton(Button):
             ticket_closed.add(i.channel.id)
             db_close(i.channel.id, i.user.id)
             
-            # ✅ УДАЛЕНИЕ ГОЛОСОВОГО КАНАЛА
-            if i.channel.id in voice_channels:
-                vc_id = voice_channels[i.channel.id]
-                vc = i.guild.get_channel(vc_id)
-                if vc:
+            # Удаление голосового канала по названию
+            thread_name = i.channel.name
+            for vc in i.guild.voice_channels:
+                if thread_name[:80] in vc.name:
                     try:
                         await vc.delete()
                     except:
                         pass
+                    break
+            
+            if i.channel.id in voice_channels:
                 del voice_channels[i.channel.id]
             
             ticket_owners.pop(i.channel.id, None)
@@ -295,11 +298,13 @@ class MainView(View):
         labels = [("💡 Идея", "идея"), ("🔧 Функционал", "функционал"), ("🎨 Дизайн", "дизайн"), ("❓ Другое", "другое")]
         await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView(i, "предложение", discord.Color.gold(), labels), ephemeral=True)
 
+# ========== ОСНОВНЫЕ СОБЫТИЯ ==========
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
     
+    # 1. Синхронизация команд
     await bot.wait_until_ready()
     try:
         for guild in bot.guilds:
@@ -316,17 +321,48 @@ async def on_ready():
         log_error(e, "sync")
         print("⚠️ Проблема с синхронизацией, но бот продолжает работу")
 
+    # 2. Восстановление состояния тикетов
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
                 for t in ch.threads:
-                    if t.name == "📋-правила-поддержки": RULES_THREAD_ID = t.id
-                    if t.name == "📋-commands-security-admins": COMMANDS_THREAD_ID = t.id
-                    if "тикет" in t.name:
-                        for vc in g.voice_channels:
-                            if t.name[:80] in vc.name:
-                                voice_channels[t.id] = vc.id
-                                print(f"🔊 Восстановлен голосовой канал для {t.name}")
+                    if t.name == "📋-правила-поддержки":
+                        RULES_THREAD_ID = t.id
+                        print(f"✅ Найдена ветка правил: {t.name}")
+                    elif t.name == "📋-commands-security-admins":
+                        COMMANDS_THREAD_ID = t.id
+                        print(f"✅ Найдена ветка команд: {t.name}")
+                    elif "тикет" in t.name:
+                        # Восстанавливаем владельца из БД
+                        c.execute('SELECT user_id FROM tickets WHERE thread_id = ? AND status = "open"', (str(t.id),))
+                        row = c.fetchone()
+                        if row:
+                            owner_id = int(row[0])
+                            ticket_owners[t.id] = owner_id
+                            # Восстанавливаем голосовой канал
+                            for vc in g.voice_channels:
+                                if t.name[:80] in vc.name:
+                                    voice_channels[t.id] = vc.id
+                                    print(f"🔊 Восстановлен голосовой канал для {t.name}")
+                            
+                            # Восстанавливаем кнопку "Закрыть тикет"
+                            try:
+                                async for msg in t.history(limit=10):
+                                    if msg.author == bot.user and msg.components:
+                                        # Находим сообщение с кнопкой
+                                        for comp in msg.components:
+                                            for btn in comp.children:
+                                                if btn.label == "🔒 Закрыть тикет":
+                                                    # Обновляем View
+                                                    view = View()
+                                                    view.add_item(CloseButton())
+                                                    await msg.edit(view=view)
+                                                    print(f"🔄 Восстановлена кнопка в {t.name}")
+                                                    break
+                                            break
+                                        break
+                            except:
+                                pass
 
 @bot.event
 async def on_message(message):
@@ -346,6 +382,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup(i: discord.Interaction):
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
