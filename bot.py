@@ -218,15 +218,14 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=embed)
     await thread.send(embed=suggestion_rules_embed)
 
-# ========== КНОПКИ ==========
+# ========== ИСПРАВЛЕННЫЕ КНОПКИ С defer ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
 
     async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
         try:
-            await i.response.defer(ephemeral=True)
-
             if i.channel.id in (RULES_THREAD_ID, COMMANDS_THREAD_ID):
                 await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
@@ -321,14 +320,13 @@ class RulesButton(Button):
         global RULES_THREAD_ID
         channel = i.channel
 
-        # Проверяем, существует ли уже ветка
         for t in channel.threads:
             if t.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = t.id
                 await i.response.send_message(f"📋 Перейдите в ветку с правилами: {t.mention}", ephemeral=True)
                 return
 
-        # Создаём публичную ветку
+        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
         try:
             t = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -339,9 +337,9 @@ class RulesButton(Button):
             await t.add_user(i.user)
             await asyncio.sleep(1)
             await send_rules(t)
-            await i.response.send_message(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
+            await i.followup.send(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
         except Exception as e:
-            await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 class SubButton(Button):
     def __init__(self, label, sub, typ, color):
@@ -351,14 +349,13 @@ class SubButton(Button):
         self.color = color
 
     async def callback(self, i: discord.Interaction):
+        ok, msg = check_spam()
+        if not ok:
+            await i.response.send_message(msg, ephemeral=True)
+            return
+
+        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
         try:
-            ok, msg = check_spam()
-            if not ok:
-                await i.response.send_message(msg, ephemeral=True)
-                return
-
-            await i.response.defer(ephemeral=True)
-
             if not is_support(i.channel):
                 await i.followup.send("❌ Не тот канал", ephemeral=True)
                 return
