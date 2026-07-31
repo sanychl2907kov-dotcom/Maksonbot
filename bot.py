@@ -257,28 +257,32 @@ class RulesButton(Button):
         global RULES_THREAD_ID
         channel = i.channel
 
+        # ✅ Проверяем, существует ли уже ветка
         for t in channel.threads:
             if t.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = t.id
-                await send_rules(t)
-                await i.response.send_message("✅ Правила обновлены", ephemeral=True)
+                await i.response.send_message(f"✅ Ветка с правилами уже существует: {t.mention}", ephemeral=True)
                 return
 
-        t = await channel.create_thread(
-            name="📋-правила-поддержки",
-            auto_archive_duration=10080,
-            type=discord.ChannelType.public_thread
-        )
-        RULES_THREAD_ID = t.id
-        await t.add_user(i.user)
-        await t.edit(overwrites={
-            i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
-            i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
-            i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
-        })
-        await asyncio.sleep(1)
-        await send_rules(t)
-        await i.response.send_message(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
+        # ✅ Если нет — создаём
+        try:
+            t = await channel.create_thread(
+                name="📋-правила-поддержки",
+                auto_archive_duration=10080,
+                type=discord.ChannelType.public_thread
+            )
+            RULES_THREAD_ID = t.id
+            await t.add_user(i.user)
+            await t.edit(overwrites={
+                i.guild.default_role: discord.PermissionOverwrite(send_messages=False, read_messages=True, view_channel=True),
+                i.user: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True),
+                i.guild.me: discord.PermissionOverwrite(send_messages=True, read_messages=True, view_channel=True)
+            })
+            await asyncio.sleep(1)
+            await send_rules(t)
+            await i.response.send_message(f"✅ Ветка правил создана: {t.mention}", ephemeral=True)
+        except Exception as e:
+            await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
 class SubButton(Button):
     def __init__(self, label, sub, typ, color):
@@ -462,7 +466,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ========== КОМАНДЫ (С НОВЫМ ДИЗАЙНОМ) ==========
+# ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
@@ -496,15 +500,12 @@ async def setup_tickets(i: discord.Interaction):
         color=discord.Color.blue()
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
-    embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/...")  # если хочешь иконку
 
-    # ✅ БАННЕР
     try:
         file = discord.File("banner.jpg", filename="banner.jpg")
         embed.set_image(url="attachment://banner.jpg")
         await i.response.send_message(file=file, embed=embed, view=view)
     except:
-        # Если баннер не найден — отправляем без картинки
         await i.response.send_message(embed=embed, view=view)
 
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
