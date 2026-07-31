@@ -721,4 +721,53 @@ async def commands_cmd(i: discord.Interaction):
 
     for t in channel.threads:
         if t.name == "📋-commands-security-admins":
-           
+            COMMANDS_THREAD_ID = t.id
+            await i.followup.send(f"✅ Ветка уже существует: {t.mention}", ephemeral=True)
+            return
+
+    try:
+        t = await channel.create_thread(
+            name="📋-commands-security-admins",
+            auto_archive_duration=10080,
+            type=discord.ChannelType.private_thread
+        )
+        COMMANDS_THREAD_ID = t.id
+        await t.add_user(i.user)
+
+        for rid in SUPPORT_ROLE_IDS:
+            role = i.guild.get_role(rid)
+            if role:
+                for member in role.members:
+                    try:
+                        await t.add_user(member)
+                    except:
+                        pass
+
+        await t.add_user(i.guild.me)
+        await asyncio.sleep(1)
+
+        await t.send(embed=discord.Embed(
+            title="📋 Commands for Security & Admins",
+            description=(
+                "/setup_tickets — меню тикетов (owner)\n"
+                "/timeout — тайм-аут (mods+admins)\n"
+                "/send_rules — правила (mods+admins)\n"
+                "/cleanup — очистка голосовых каналов (mods+admins)\n"
+                "/commands — этот список (mods+admins)\n\n"
+                "📋 Правила — кнопка в меню (owner)\n\n"
+                "• Голосовой канал с каждым тикетом\n"
+                "• Удаляется при закрытии\n"
+                "• База данных\n"
+                "• Защита от фальшивых тикетов\n"
+                "• Защита от массового спама тикетами\n"
+                "• Прогрессивный тайм-аут за грубые нарушения"
+            ),
+            color=discord.Color.blue()
+        ))
+
+        await i.followup.send(f"✅ Приватная ветка создана: {t.mention}", ephemeral=True)
+
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+bot.run(TOKEN)
