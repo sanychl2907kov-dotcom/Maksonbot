@@ -16,12 +16,10 @@ import threading
 logging.basicConfig(filename='errors.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 def log_error(e, ctx=""): logging.error(f"{ctx}: {e}"); print(f"❌ {e}")
 
-# ========== ТОКЕН ==========
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 if not TOKEN: raise ValueError("Токен не найден")
 
-# ========== НАСТРОЙКИ ==========
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
 AUTHORIZED_USER_ID = 1495071540927266841
@@ -60,14 +58,12 @@ def check_spam():
     ticket_create_timestamps.append(now)
     return True, None
 
-# ========== Flask-заглушка ==========
 app = Flask('')
 @app.route('/')
 def home(): return "Бот MAKSON работает 24/7!"
 def run_flask(): app.run(host='0.0.0.0', port=10000)
 threading.Thread(target=run_flask, daemon=True).start()
 
-# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
@@ -90,7 +86,6 @@ def db_close(thread_id, closed_by):
               (datetime.now().isoformat(), str(closed_by), str(thread_id)))
     conn.commit()
 
-# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
 ticket_creation_time = {}
 fake_counter = {}
@@ -218,13 +213,13 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=embed)
     await thread.send(embed=suggestion_rules_embed)
 
-# ========== ИСПРАВЛЕННЫЕ КНОПКИ С defer ==========
+# ========== ВСЕ КНОПКИ С DEFER ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
+        await i.response.defer(ephemeral=True)
         try:
             if i.channel.id in (RULES_THREAD_ID, COMMANDS_THREAD_ID):
                 await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
@@ -249,7 +244,6 @@ class CloseButton(Button):
                 await i.followup.send("❌ Не ваш тикет", ephemeral=True)
                 return
 
-            # ========== ПРОГРЕССИВНЫЙ ТАЙМ-АУТ ==========
             if is_moderator or i.user.id == AUTHORIZED_USER_ID:
                 if author_id:
                     violations = user_violations.get(author_id, 0)
@@ -268,7 +262,6 @@ class CloseButton(Button):
                                 pass
                         user_violations[author_id] = 0
 
-            # ========== ФАЛЬШИВЫЙ ТИКЕТ ==========
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
                 if ct and time.time() - ct < 10:
@@ -326,7 +319,7 @@ class RulesButton(Button):
                 await i.response.send_message(f"📋 Перейдите в ветку с правилами: {t.mention}", ephemeral=True)
                 return
 
-        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
+        await i.response.defer(ephemeral=True)
         try:
             t = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -354,7 +347,7 @@ class SubButton(Button):
             await i.response.send_message(msg, ephemeral=True)
             return
 
-        await i.response.defer(ephemeral=True)  # ✅ Сразу отвечаем
+        await i.response.defer(ephemeral=True)
         try:
             if not is_support(i.channel):
                 await i.followup.send("❌ Не тот канал", ephemeral=True)
@@ -467,7 +460,6 @@ class MainView(View):
         ]
         await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView("предложение", discord.Color.gold(), labels), ephemeral=True)
 
-# ========== СОБЫТИЯ ==========
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
@@ -533,7 +525,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
@@ -567,29 +558,40 @@ async def setup_tickets(i: discord.Interaction):
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
 
-    # ✅ КАРТИНКА С ГИТХАБА (ПРЯМАЯ ССЫЛКА)
     embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
 
     await i.response.send_message(embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
-@bot.tree.command(name="timeout", description="Выдать тайм-аут")
-async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Нарушение"):
+@bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки (только для модераторов)")
+async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Нарушение правил"):
     if not is_support(i.channel):
         await i.response.send_message("❌ Только в канале поддержки", ephemeral=True)
         return
 
+    if not isinstance(i.channel, discord.Thread):
+        await i.response.send_message("❌ Команда работает только внутри ветки", ephemeral=True)
+        return
+
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID and not i.user.guild_permissions.administrator:
-        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        await i.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
         return
 
     if user.id == AUTHORIZED_USER_ID:
         await i.response.send_message("❌ Нельзя выдать тайм-аут владельцу", ephemeral=True)
         return
 
-    if user in (bot.user, i.user) or not (1 <= minutes <= 40320):
-        await i.response.send_message("❌ Недопустимый пользователь или время", ephemeral=True)
+    if user in (bot.user, i.user):
+        await i.response.send_message("❌ Нельзя выдать тайм-аут боту или себе", ephemeral=True)
+        return
+
+    if not (1 <= minutes <= 40320):
+        await i.response.send_message("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
+        return
+
+    if i.channel not in user.threads:
+        await i.response.send_message(f"❌ Пользователь {user.mention} не является участником этой ветки", ephemeral=True)
         return
 
     await i.response.defer(ephemeral=False)
