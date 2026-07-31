@@ -26,7 +26,7 @@ SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
 AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
-MAX_TICKETS_GLOBAL = 20  # ✅ максимальное количество открытых тикетов
+MAX_TICKETS_GLOBAL = 20
 TICKET_LIFETIME = 10800
 FAKE_TICKET_TIMEOUT = 300
 MAX_FAKE_TICKETS = 4
@@ -43,7 +43,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ========== ЗАЩИТА ОТ СПАМА ==========
 ticket_create_timestamps = []
-SPAM_WINDOW = 10  # 10 секунд
+SPAM_WINDOW = 10
 MAX_CREATES_PER_WINDOW = 5
 spam_blocked_until = 0
 
@@ -52,15 +52,11 @@ def check_spam():
     now = time.time()
     if spam_blocked_until > now:
         return False, f"⏳ Подождите {int(spam_blocked_until - now)} секунд, слишком много тикетов создаётся."
-    
-    # Очищаем старые записи
     global ticket_create_timestamps
     ticket_create_timestamps = [t for t in ticket_create_timestamps if t > now - SPAM_WINDOW]
-    
     if len(ticket_create_timestamps) >= MAX_CREATES_PER_WINDOW:
         spam_blocked_until = now + 30
         return False, f"⏳ Слишком много тикетов за {SPAM_WINDOW} секунд. Пауза на 30 секунд."
-    
     ticket_create_timestamps.append(now)
     return True, None
 
@@ -99,6 +95,7 @@ ticket_owners = {}
 ticket_creation_time = {}
 fake_counter = {}
 fake_last_time = {}
+user_violations = {}
 ticket_closed = set()
 voice_channels = {}
 last_menu_message_id = {}
@@ -106,38 +103,47 @@ RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
 
 RULES_DICT = {
-    "1.1": "Правила обязательны для всех.",
-    "1.2": "Игнорирование = предупреждение → закрытие.",
-    "1.3": "Администрация толкует правила.",
-    "2.1": "Оскорбления, грубость, агрессия запрещены.",
-    "2.2": "Первое нарушение — предупреждение.",
-    "2.3": "Повторное — закрытие ветки.",
-    "3.1": "Флуд, спам, провокации запрещены.",
-    "3.2": "Такие сообщения → ветка закрывается сразу.",
-    "3.3": "Пишите по делу.",
-    "4.1": "Указывайте ник, суть, доказательства.",
-    "4.2": "Не по теме → ветка закрыта.",
-    "4.3": "Одна проблема — один тикет.",
-    "5.1": "Ветки приватные.",
-    "5.2": "Передача содержимого третьим лицам запрещена.",
-    "5.3": "Нарушение → закрытие ветки.",
-    "6.1": "Автор отвечает за достоверность.",
-    "6.2": "Ложные жалобы → закрытие.",
-    "6.3": "Администрация может закрыть ветку без объяснения.",
-    "6.4": "Фальшивый тикет → предупреждение.",
-    "6.5": "4 фальшивых тикета → тайм-аут 5 мин.",
-    "7.1": "Ответ в течение 30 минут.",
-    "7.2": "24 часа без ответа → авто-закрытие.",
-    "7.3": "Можно запросить продление.",
-    "8.1": "Жалобы подтверждаются доказательствами.",
-    "8.2": "Подделка → закрытие (повтор → предупреждение).",
-    "8.3": "Без доказательств — решение откладывается.",
-    "9.1": "Не требовать немедленного ответа.",
-    "9.2": "Вопросы только в тикете.",
-    "9.3": "Грубость → предупреждение, повтор → закрытие.",
-    "10.1": "Тикет закрывается после решения или по инициативе автора.",
-    "10.2": "Восстановление невозможно.",
-    "10.3": "Новый тикет — новое обращение."
+    "1": (
+        "**1. Основные правила поведения**\n"
+        "1.1. Оскорбление по национальным, религиозным или иным признакам, а также провокации и токсичное поведение в сторону участников проекта — **закрытие ветки без предупреждения**.\n"
+        "1.2. Бессмысленный спам, флуд и повторяющиеся сообщения — **предупреждение**, при повторении — **закрытие ветки**.\n"
+        "1.3. Спам ролями, которые отвечают за работу в проекте — **закрытие ветки** и **тайм-аут 5 минут**.\n"
+        "1.4. Грубость и агрессия в адрес администрации — **закрытие ветки** и **прогрессивный тайм-аут** (30 → 60 → 120 → 240 → 480 минут)."
+    ),
+    "2": (
+        "**2. Контент и публикации**\n"
+        "2.1. Шокирующий, развратный или NSFW-контент — **закрытие ветки** и **тайм-аут 15 минут**.\n"
+        "2.2. Публикация файлов, которые наносят вред (вирусы, вредоносные ссылки) — **закрытие ветки** и **бессрочный бан**.\n"
+        "2.3. Реклама чего-либо, не связанного с проектом — **предупреждение**, при повторении — **закрытие ветки**."
+    ),
+    "3": (
+        "**3. В голосовых каналах**\n"
+        "3.1. Помеха звуком (SoundPad, шум, громкие звуки), если это раздражает других участников — **предупреждение**, при повторении — **тайм-аут 5 минут**."
+    ),
+    "4": (
+        "**4. Тикеты бота**\n"
+        "4.1. Игнорирование вопросов модераторов и отказ от взаимодействия — **закрытие ветки** и **тайм-аут 15 минут**.\n"
+        "4.2. Создание тикетов/заявок не по теме — **закрытие ветки** без предупреждения.\n"
+        "4.3. Создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**, при 4 таких нарушениях подряд — **тайм-аут 5 минут**."
+    ),
+    "5": (
+        "**5. Конфиденциальность**\n"
+        "5.1. Ветки являются приватными — в них пишут только автор и модераторы.\n"
+        "5.2. Передача содержимого тикетов третьим лицам — **закрытие ветки** и **тайм-аут 30 минут**.\n"
+        "5.3. Публикация скриншотов тикетов вне сервера — **закрытие ветки** и **тайм-аут 10 минут**."
+    ),
+    "6": (
+        "**6. Сроки и ожидание**\n"
+        "6.1. Ответ на тикет даётся в течение 30 минут.\n"
+        "6.2. Если автор не отвечает в течение 24 часов — тикет **автоматически закрывается**.\n"
+        "6.3. Повторные запросы на продление времени не рассматриваются."
+    ),
+    "7": (
+        "**7. Закрытие тикета**\n"
+        "7.1. Тикет закрывается после решения проблемы или по инициативе автора.\n"
+        "7.2. После закрытия ветка удаляется — **восстановление невозможно**.\n"
+        "7.3. Автор может открыть новый тикет только по новой проблеме."
+    )
 }
 
 MORNING_GIFS = [
@@ -174,25 +180,43 @@ async def create_voice_channel(interaction, thread_name):
 
 async def send_rules(thread, rules=None, mention=None):
     if rules:
-        found = [f"**{r}.** {RULES_DICT[r]}" for r in [x.strip() for x in rules.split(",")] if r in RULES_DICT]
+        found = [f"{RULES_DICT[r]}" for r in [x.strip() for x in rules.split(",")] if r in RULES_DICT]
         if not found:
             await thread.send(embed=discord.Embed(
                 title="❌ Ошибка",
-                description=f"Правила не найдены. Доступные: {', '.join(RULES_DICT.keys())}",
+                description=f"Правила не найдены. Доступные номера: {', '.join(RULES_DICT.keys())}",
                 color=discord.Color.red()
             ))
             return
         await thread.send(embed=discord.Embed(
             title="📋 Нарушение правил",
-            description=f"{mention or ''}\n\n" + "\n".join(found),
+            description=f"{mention or ''}\n\n" + "\n\n".join(found),
             color=discord.Color.red()
         ))
         return
-    await thread.send(embed=discord.Embed(
-        title="📋 Правила техподдержки",
-        description="...",
+    
+    embed = discord.Embed(
+        title="📋 Правила сервера",
+        description="\n\n".join(RULES_DICT.values()),
         color=discord.Color.gold()
-    ))
+    )
+    
+    suggestion_rules_embed = discord.Embed(
+        title="💡 Правила для предложений",
+        description=(
+            "1.1. Предложения должны быть чёткими и по делу.\n"
+            "1.2. Оскорбления, флуд и спам запрещены.\n"
+            "1.3. За нарушение — ветка закрывается без предупреждения.\n"
+            "1.4. Администрация рассматривает все предложения, но не обязана их реализовывать.\n"
+            "1.5. За создание и мгновенное закрытие тикета (фальшивый тикет) — предупреждение.\n"
+            "1.6. При 4 таких тикетах подряд — тайм-аут 5 минут.\n\n"
+            "🔒 Правила действуют на всех участников."
+        ),
+        color=discord.Color.gold()
+    )
+    
+    await thread.send(embed=embed)
+    await thread.send(embed=suggestion_rules_embed)
 
 # ========== КНОПКИ ==========
 class CloseButton(Button):
@@ -226,6 +250,26 @@ class CloseButton(Button):
                 await i.followup.send("❌ Не ваш тикет", ephemeral=True)
                 return
 
+            # ========== ПРОГРЕССИВНЫЙ ТАЙМ-АУТ ==========
+            if is_moderator or i.user.id == AUTHORIZED_USER_ID:
+                if author_id:
+                    violations = user_violations.get(author_id, 0)
+                    if violations >= 1:
+                        timeout_minutes = min(30 * (2 ** (violations - 1)), 480)
+                        member = i.guild.get_member(author_id)
+                        if member:
+                            try:
+                                await member.timeout(discord.utils.utcnow() + timedelta(minutes=timeout_minutes))
+                                await i.followup.send(
+                                    f"⏰ {member.mention} получил тайм-аут {timeout_minutes} минут "
+                                    f"(нарушение #{violations}, прогрессивное наказание)",
+                                    ephemeral=True
+                                )
+                            except:
+                                pass
+                        user_violations[author_id] = 0
+
+            # ========== ФАЛЬШИВЫЙ ТИКЕТ ==========
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
                 if ct and time.time() - ct < 10:
@@ -238,7 +282,7 @@ class CloseButton(Button):
                         m = i.guild.get_member(uid)
                         if m:
                             await m.timeout(discord.utils.utcnow() + timedelta(seconds=FAKE_TICKET_TIMEOUT))
-                            await i.followup.send(f"⏰ {m.mention} тайм-аут {FAKE_TICKET_TIMEOUT//60} мин", ephemeral=True)
+                            await i.followup.send(f"⏰ {m.mention} тайм-аут {FAKE_TICKET_TIMEOUT//60} мин за фальшивые тикеты", ephemeral=True)
                             fake_counter[uid] = 0
                     else:
                         await i.followup.send(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
@@ -267,6 +311,7 @@ class CloseButton(Button):
 
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "CloseButton")
 
 class RulesButton(Button):
     def __init__(self):
@@ -314,7 +359,6 @@ class SubButton(Button):
 
     async def callback(self, i: discord.Interaction):
         try:
-            # ✅ Защита от спама
             ok, msg = check_spam()
             if not ok:
                 await i.response.send_message(msg, ephemeral=True)
@@ -336,10 +380,9 @@ class SubButton(Button):
                 await i.followup.send(f"❌ Лимит {MAX_TICKETS_PER_USER} тикета", ephemeral=True)
                 return
 
-            # ✅ Глобальный лимит
             total_open = sum(1 for t in i.channel.threads if "тикет" in t.name)
             if total_open >= MAX_TICKETS_GLOBAL:
-                await i.followup.send(f"❌ Достигнут лимит открытых тикетов ({MAX_TICKETS_GLOBAL}). Подождите, пока закроют часть.", ephemeral=True)
+                await i.followup.send(f"❌ Достигнут лимит открытых тикетов ({MAX_TICKETS_GLOBAL}). Подождите.", ephemeral=True)
                 return
 
             name = f"тикет-{i.user.name}-{uid}-{self.typ}-{self.sub}"
@@ -682,9 +725,7 @@ async def commands_cmd(i: discord.Interaction):
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
         await i.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-
-    await i.response.defer(ephemeral=True)
+        return    await i.response.defer(ephemeral=True)
 
     global COMMANDS_THREAD_ID
     channel = i.channel
@@ -729,7 +770,8 @@ async def commands_cmd(i: discord.Interaction):
                 "• Удаляется при закрытии\n"
                 "• База данных\n"
                 "• Защита от фальшивых тикетов\n"
-                "• Защита от массового спама тикетами"
+                "• Защита от массового спама тикетами\n"
+                "• Прогрессивный тайм-аут за грубые нарушения"
             ),
             color=discord.Color.blue()
         ))
