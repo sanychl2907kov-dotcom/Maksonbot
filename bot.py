@@ -213,7 +213,7 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=embed)
     await thread.send(embed=suggestion_rules_embed)
 
-# ========== ВСЕ КНОПКИ С DEFER ==========
+# ========== КНОПКИ С DEFER ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
@@ -525,10 +525,12 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# ========== ВСЕ КОМАНДЫ С DEFER ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
+    await i.response.defer(ephemeral=True)
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        await i.followup.send("❌ Нет доступа", ephemeral=True)
         return
 
     lid = last_menu_message_id.get(i.channel.id)
@@ -557,44 +559,44 @@ async def setup_tickets(i: discord.Interaction):
         color=discord.Color.blue()
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
-
     embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
 
-    await i.response.send_message(embed=embed, view=view)
+    await i.followup.send(embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки (только для модераторов)")
 async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Нарушение правил"):
+    await i.response.defer(ephemeral=True)
+    
     if not is_support(i.channel):
-        await i.response.send_message("❌ Только в канале поддержки", ephemeral=True)
+        await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
         return
 
     if not isinstance(i.channel, discord.Thread):
-        await i.response.send_message("❌ Команда работает только внутри ветки", ephemeral=True)
+        await i.followup.send("❌ Команда работает только внутри ветки", ephemeral=True)
         return
 
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID and not i.user.guild_permissions.administrator:
-        await i.response.send_message("❌ У вас нет прав на использование этой команды", ephemeral=True)
+        await i.followup.send("❌ У вас нет прав на использование этой команды", ephemeral=True)
         return
 
     if user.id == AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нельзя выдать тайм-аут владельцу", ephemeral=True)
+        await i.followup.send("❌ Нельзя выдать тайм-аут владельцу", ephemeral=True)
         return
 
     if user in (bot.user, i.user):
-        await i.response.send_message("❌ Нельзя выдать тайм-аут боту или себе", ephemeral=True)
+        await i.followup.send("❌ Нельзя выдать тайм-аут боту или себе", ephemeral=True)
         return
 
     if not (1 <= minutes <= 40320):
-        await i.response.send_message("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
+        await i.followup.send("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
         return
 
     if i.channel not in user.threads:
-        await i.response.send_message(f"❌ Пользователь {user.mention} не является участником этой ветки", ephemeral=True)
+        await i.followup.send(f"❌ Пользователь {user.mention} не является участником этой ветки", ephemeral=True)
         return
 
-    await i.response.defer(ephemeral=False)
     await user.timeout(discord.utils.utcnow() + timedelta(minutes=minutes), reason=reason)
     await i.followup.send(embed=discord.Embed(
         title="⏰ Тайм-аут",
@@ -604,20 +606,20 @@ async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, re
 
 @bot.tree.command(name="send_rules", description="Отправить правила")
 async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord.Member = None):
+    await i.response.defer(ephemeral=True)
+    
     if not is_support(i.channel):
-        await i.response.send_message("❌ Только в канале поддержки", ephemeral=True)
+        await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
         return
 
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        await i.followup.send("❌ Нет прав", ephemeral=True)
         return
 
     if not isinstance(i.channel, discord.Thread):
-        await i.response.send_message("❌ Только в ветке", ephemeral=True)
+        await i.followup.send("❌ Только в ветке", ephemeral=True)
         return
-
-    await i.response.defer(ephemeral=False)
 
     if rule:
         await send_rules(i.channel, rule, user.mention if user else None)
@@ -651,16 +653,16 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
 
 @bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
 async def cleanup(i: discord.Interaction):
+    await i.response.defer(ephemeral=True)
+    
     if not is_support(i.channel):
-        await i.response.send_message("❌ Только в канале поддержки", ephemeral=True)
+        await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
         return
 
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        await i.followup.send("❌ Нет прав", ephemeral=True)
         return
-
-    await i.response.defer(ephemeral=False)
 
     active = set()
     for ch in i.guild.channels:
@@ -701,16 +703,16 @@ async def cleanup(i: discord.Interaction):
 
 @bot.tree.command(name="commands", description="Список команд для Security & Admins")
 async def commands_cmd(i: discord.Interaction):
+    await i.response.defer(ephemeral=True)
+    
     if not is_support(i.channel):
-        await i.response.send_message("❌ Только в канале поддержки", ephemeral=True)
+        await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
         return
 
     is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
     if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        await i.followup.send("❌ Нет прав", ephemeral=True)
         return
-
-    await i.response.defer(ephemeral=True)
 
     global COMMANDS_THREAD_ID
     channel = i.channel
