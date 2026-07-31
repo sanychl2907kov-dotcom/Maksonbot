@@ -462,7 +462,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# ========== КОМАНДЫ ==========
+# ========== КОМАНДЫ (С НОВЫМ ДИЗАЙНОМ) ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
@@ -484,23 +484,29 @@ async def setup_tickets(i: discord.Interaction):
     embed = discord.Embed(
         title="🎫 **Техническая поддержка**",
         description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "**Выберите тип обращения:**\n\n"
             "🔴 **Жалоба** — сообщить о нарушении или проблеме\n"
             "🟢 **Предложение** — поделиться идеей или улучшением\n"
-            "📋 **Правила** — ознакомиться с правилами сервера\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "📋 **Правила** — ознакомиться с правилами сервера\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🕒 **Ответ в течение 30 минут**\n"
             "👮 **Модераторы всегда на связи**"
         ),
         color=discord.Color.blue()
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
+    embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/...")  # если хочешь иконку
 
-    # ✅ КАРТИНКА С ГИТХАБА
-    file = discord.File("banner.jpg", filename="banner.jpg")
-    embed.set_image(url="attachment://banner.jpg")
+    # ✅ БАННЕР
+    try:
+        file = discord.File("banner.jpg", filename="banner.jpg")
+        embed.set_image(url="attachment://banner.jpg")
+        await i.response.send_message(file=file, embed=embed, view=view)
+    except:
+        # Если баннер не найден — отправляем без картинки
+        await i.response.send_message(embed=embed, view=view)
 
-    await i.response.send_message(file=file, embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут")
