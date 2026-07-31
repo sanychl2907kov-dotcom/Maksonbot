@@ -257,14 +257,15 @@ class RulesButton(Button):
         global RULES_THREAD_ID
         channel = i.channel
 
-        # ✅ Проверяем, существует ли уже ветка
+        # Проверяем, существует ли уже ветка
         for t in channel.threads:
             if t.name == "📋-правила-поддержки":
                 RULES_THREAD_ID = t.id
-                await i.response.send_message(f"✅ Ветка с правилами уже существует: {t.mention}", ephemeral=True)
+                # ✅ Просто перенаправляем в существующую ветку
+                await i.response.send_message(f"📋 Перейдите в ветку с правилами: {t.mention}", ephemeral=True)
                 return
 
-        # ✅ Если нет — создаём
+        # Если нет — создаём
         try:
             t = await channel.create_thread(
                 name="📋-правила-поддержки",
