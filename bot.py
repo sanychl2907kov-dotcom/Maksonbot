@@ -564,6 +564,7 @@ async def setup_tickets(i: discord.Interaction):
     await i.followup.send(embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
+# ✅ ИСПРАВЛЕННАЯ КОМАНДА /timeout
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки (только для модераторов)")
 async def timeout(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Нарушение правил"):
     await i.response.defer(ephemeral=True)
