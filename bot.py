@@ -213,7 +213,7 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=embed)
     await thread.send(embed=suggestion_rules_embed)
 
-# ========== КНОПКИ ==========
+# ========== ВСЕ КНОПКИ С DEFER ==========
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
@@ -528,10 +528,10 @@ async def on_message(message):
 # ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
-    await i.response.defer(ephemeral=False)  # ✅ НЕ эфемерное
+    await i.response.defer(ephemeral=False)
     
     if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
-        await i.followup.send("❌ Нет доступа")  # ✅ НЕ эфемерное
+        await i.followup.send("❌ Нет доступа")
         return
 
     lid = last_menu_message_id.get(i.channel.id)
@@ -562,7 +562,7 @@ async def setup_tickets(i: discord.Interaction):
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
     embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
 
-    await i.followup.send(embed=embed, view=view)  # ✅ НЕ эфемерное
+    await i.followup.send(embed=embed, view=view)
     last_menu_message_id[i.channel.id] = (await i.original_response()).id
 
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки (только для модераторов)")
