@@ -80,7 +80,6 @@ last_menu_message_id = {}
 RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
 
-# ========== ГЛОБАЛЬНЫЙ RULES_DICT ==========
 RULES_DICT = {
     "1.1": "Правила обязательны для всех.",
     "1.2": "Игнорирование = предупреждение → закрытие.",
@@ -116,7 +115,6 @@ RULES_DICT = {
     "10.3": "Новый тикет — новое обращение."
 }
 
-# ========== ГИФКИ ==========
 MORNING_GIFS = [
     "https://media.tenor.com/Rq2k3c5xY6gAAAAC/good-morning.gif",
     "https://media.tenor.com/5z1h7k9W3jUAAAAC/morning.gif",
@@ -167,9 +165,7 @@ class CloseButton(Button):
                 await i.followup.send("❌ Нет прав", ephemeral=True); return
             author_id = ticket_owners.get(i.channel.id)
             if not author_id:
-                await i.followup.send("❌ Тикет не найден", ephemeral=True)
-                ticket_closed.add(i.channel.id)
-                return
+                await i.followup.send("❌ Тикет не найден", ephemeral=True); ticket_closed.add(i.channel.id); return
             if i.user.id != author_id and not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles):
                 await i.followup.send("❌ Не ваш тикет", ephemeral=True); return
             if i.user.id == author_id:
@@ -189,15 +185,25 @@ class CloseButton(Button):
                         await i.followup.send(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
             ticket_closed.add(i.channel.id)
             db_close(i.channel.id, i.user.id)
+            
+            # ✅ УДАЛЕНИЕ ГОЛОСОВОГО КАНАЛА
             if i.channel.id in voice_channels:
-                vc = i.guild.get_channel(voice_channels[i.channel.id])
-                if vc: await vc.delete()
+                vc_id = voice_channels[i.channel.id]
+                vc = i.guild.get_channel(vc_id)
+                if vc:
+                    try:
+                        await vc.delete()
+                    except:
+                        pass
                 del voice_channels[i.channel.id]
+            
             ticket_owners.pop(i.channel.id, None)
             ticket_creation_time.pop(i.channel.id, None)
             await i.followup.send("✅ Тикет закрыт", ephemeral=True)
-            try: await i.channel.delete()
-            except: pass
+            try:
+                await i.channel.delete()
+            except:
+                pass
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
@@ -292,7 +298,7 @@ class MainView(View):
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
-    print(f"✅ Бот {bot.user} запущен")
+    print(f"✅ {bot.user} запущен")
     
     await bot.wait_until_ready()
     try:
@@ -318,7 +324,9 @@ async def on_ready():
                     if t.name == "📋-commands-security-admins": COMMANDS_THREAD_ID = t.id
                     if "тикет" in t.name:
                         for vc in g.voice_channels:
-                            if t.name[:80] in vc.name: voice_channels[t.id] = vc.id
+                            if t.name[:80] in vc.name:
+                                voice_channels[t.id] = vc.id
+                                print(f"🔊 Восстановлен голосовой канал для {t.name}")
 
 @bot.event
 async def on_message(message):
