@@ -9,7 +9,7 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from flask import Flask, render_template_string
+from flask import Flask, jsonify
 import threading
 
 # ========== ЛОГИРОВАНИЕ ==========
@@ -39,8 +39,9 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== УСИЛЕННАЯ FLASK-ЗАГЛУШКА ==========
+# ========== НОВАЯ FLASK-ЗАГЛУШКА ==========
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Бот MAKSON работает 24/7!"
@@ -51,18 +52,28 @@ def ping():
 
 @app.route('/status')
 def status():
-    return {
+    return jsonify({
         "status": "online",
-        "uptime": time.time() - start_time,
+        "uptime": round(time.time() - start_time, 2),
         "tickets_created": ticket_stats["created"],
-        "tickets_closed": ticket_stats["closed"]
-    }
+        "tickets_closed": ticket_stats["closed"],
+        "bot_user": str(bot.user) if bot.user else "None"
+    })
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+@app.route('/keepalive')
+def keepalive():
+    return "alive", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=10000, threaded=True)
 
-threading.Thread(target=run_flask, daemon=True).start()
 start_time = time.time()
+threading.Thread(target=run_flask, daemon=True).start()
+print("✅ Flask-заглушка запущена на порту 10000")
 # =================================================
 
 # ========== ЗАЩИТА ОТ СПАМА ==========
