@@ -9,7 +9,7 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, render_template_string
 import threading
 
 # ========== ЛОГИРОВАНИЕ ==========
@@ -39,6 +39,32 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ========== УСИЛЕННАЯ FLASK-ЗАГЛУШКА ==========
+app = Flask('')
+@app.route('/')
+def home():
+    return "Бот MAKSON работает 24/7!"
+
+@app.route('/ping')
+def ping():
+    return "pong", 200
+
+@app.route('/status')
+def status():
+    return {
+        "status": "online",
+        "uptime": time.time() - start_time,
+        "tickets_created": ticket_stats["created"],
+        "tickets_closed": ticket_stats["closed"]
+    }
+
+def run_flask():
+    app.run(host='0.0.0.0', port=10000, threaded=True)
+
+threading.Thread(target=run_flask, daemon=True).start()
+start_time = time.time()
+# =================================================
+
 # ========== ЗАЩИТА ОТ СПАМА ==========
 ticket_create_timestamps = []
 SPAM_WINDOW = 10
@@ -58,12 +84,7 @@ def check_spam():
     ticket_create_timestamps.append(now)
     return True, None
 
-app = Flask('')
-@app.route('/')
-def home(): return "Бот MAKSON работает 24/7!"
-def run_flask(): app.run(host='0.0.0.0', port=10000)
-threading.Thread(target=run_flask, daemon=True).start()
-
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
@@ -86,6 +107,7 @@ def db_close(thread_id, closed_by):
               (datetime.now().isoformat(), str(closed_by), str(thread_id)))
     conn.commit()
 
+# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
 ticket_creation_time = {}
 fake_counter = {}
@@ -96,6 +118,7 @@ voice_channels = {}
 last_menu_message_id = {}
 RULES_THREAD_ID = None
 COMMANDS_THREAD_ID = None
+ticket_stats = {"created": 0, "closed": 0}
 
 RULES_DICT = {
     "1": (
@@ -281,6 +304,7 @@ class CloseButton(Button):
 
             ticket_closed.add(i.channel.id)
             db_close(i.channel.id, i.user.id)
+            ticket_stats["closed"] += 1
 
             thread_name = i.channel.name
             for vc in i.guild.voice_channels:
@@ -399,6 +423,7 @@ class SubButton(Button):
             ticket_owners[t.id] = uid
             ticket_creation_time[t.id] = time.time()
             db_add(t.id, uid, i.user.name, self.typ, self.sub)
+            ticket_stats["created"] += 1
 
             embed = discord.Embed(
                 title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ" if self.typ == "предложение" else "📋 НОВЫЙ ТИКЕТ",
@@ -459,6 +484,37 @@ class MainView(View):
             ("❓ Другое", "другое")
         ]
         await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView("предложение", discord.Color.gold(), labels), ephemeral=True)
+
+    @discord.ui.button(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
+    async def rules(self, i: discord.Interaction, b: Button):
+        await RulesButton().callback(i)
+
+    @discord.ui.button(label="❓ Помощь", style=discord.ButtonStyle.secondary, row=1)
+    async def help(self, i: discord.Interaction, b: Button):
+        embed = discord.Embed(
+            title="❓ **Помощь по боту**",
+            description=(
+                "**Как создать тикет:**\n"
+                "1️⃣ Нажмите кнопку **«Жалоба»** или **«Предложение»**\n"
+                "2️⃣ Выберите подкатегорию\n"
+                "3️⃣ Заполните форму в созданной ветке\n\n"
+                "**Как закрыть тикет:**\n"
+                "— Нажмите кнопку **«Закрыть тикет»** внизу ветки\n"
+                "— Подтвердите закрытие\n\n"
+                "**Где посмотреть правила:**\n"
+                "— Нажмите кнопку **«Правила»** в этом меню\n"
+                "— Ветка с правилами откроется автоматически\n\n"
+                "**Команды для модераторов:**\n"
+                "— `/timeout` — выдать тайм-аут\n"
+                "— `/send_rules` — отправить правила\n"
+                "— `/cleanup` — очистить голосовые каналы\n"
+                "— `/commands` — список команд\n\n"
+                "🕒 **Ответ в течение 30 минут**\n"
+                "👮 **Модераторы всегда на связи**"
+            ),
+            color=discord.Color.blue()
+        )
+        await i.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -543,7 +599,6 @@ async def setup_tickets(i: discord.Interaction):
             pass
 
     view = MainView()
-    view.add_item(RulesButton())
 
     embed = discord.Embed(
         title="🎫 **Техническая поддержка**",
@@ -553,6 +608,7 @@ async def setup_tickets(i: discord.Interaction):
             "🔴 **Жалоба** — сообщить о нарушении или проблеме\n"
             "🟢 **Предложение** — поделиться идеей или улучшением\n"
             "📋 **Правила** — ознакомиться с правилами сервера\n"
+            "❓ **Помощь** — инструкция по использованию бота\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🕒 **Ответ в течение 30 минут**\n"
             "👮 **Модераторы всегда на связи**"
