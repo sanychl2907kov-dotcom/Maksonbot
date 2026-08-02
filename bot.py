@@ -42,26 +42,26 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== FLASK-ЗАГЛУШКА ==========
+# ========== FLASK-ЗАГЛУШКА (ИСПРАВЛЕННАЯ) ==========
 app = Flask('')
 
 @app.route('/')
-def home(): 
+def home():
     return "Бот MAKSON работает 24/7!"
 
 @app.route('/ping')
-def ping(): 
+def ping():
     return "pong", 200
 
 @app.route('/health')
-def health(): 
+def health():
     return "OK", 200
 
 @app.route('/keepalive')
-def keepalive(): 
+def keepalive():
     return "alive", 200
 
-def run_flask(): 
+def run_flask():
     app.run(host='0.0.0.0', port=10000, threaded=True)
 
 threading.Thread(target=run_flask, daemon=True).start()
@@ -366,6 +366,37 @@ class RulesButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "RulesButton")
 
+class HelpButton(Button):
+    def __init__(self):
+        super().__init__(label="❓ Помощь", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            embed = discord.Embed(
+                title="❓ Помощь по боту",
+                description=(
+                    "**Как создать тикет:**\n"
+                    "1. Нажмите **Жалоба** или **Предложение**.\n"
+                    "2. Выберите подкатегорию.\n"
+                    "3. Ожидайте ответа модератора (до 30 минут).\n\n"
+                    "**Как закрыть тикет:**\n"
+                    "• Нажмите кнопку **🔒 Закрыть тикет** внизу ветки.\n\n"
+                    "**Правила:**\n"
+                    "• Нажмите **📋 Правила** для просмотра полных правил.\n\n"
+                    "⚠️ **Важно:**\n"
+                    "• Не создавайте более 2 тикетов одновременно.\n"
+                    "• Быстрое закрытие тикета (< 10 сек) может привести к тайм-ауту.\n"
+                    "• Ответ даётся в течение 30 минут."
+                ),
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text="MAKSON Project • Поддержка 24/7")
+            await i.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "HelpButton")
+
 class SubButton(Button):
     def __init__(self, label, ticket_type, subcategory, style=discord.ButtonStyle.primary):
         super().__init__(label=label, style=style, row=0)
@@ -451,6 +482,7 @@ class MainView(View):
         self.add_item(SubButton("🔴 Жалоба", "Жалоба", "Основная", discord.ButtonStyle.danger))
         self.add_item(SubButton("🟢 Предложение", "Предложение", "Основная", discord.ButtonStyle.success))
         self.add_item(RulesButton())
+        self.add_item(HelpButton())
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
@@ -478,6 +510,7 @@ async def setup_tickets(i: discord.Interaction):
             "🔴 **Жалоба** — сообщить о нарушении или проблеме\n"
             "🟢 **Предложение** — поделиться идеей или улучшением\n"
             "📋 **Правила** — ознакомиться с правилами сервера\n"
+            "❓ **Помощь** — инструкция по использованию бота\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🕒 **Ответ в течение 30 минут**\n"
             "👮 **Модераторы всегда на связи**"
