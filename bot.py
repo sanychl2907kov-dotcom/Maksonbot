@@ -511,13 +511,14 @@ class SubButton(Button):
         self.color = color
 
     async def callback(self, i: discord.Interaction):
-        ok, msg = check_spam()
-        if not ok:
-            await i.response.send_message(msg, ephemeral=True)
-            return
-
         await i.response.defer(ephemeral=True)
+        
         try:
+            ok, msg = check_spam()
+            if not ok:
+                await i.followup.send(msg, ephemeral=True)
+                return
+
             if not is_support(i.channel):
                 await i.followup.send("❌ Не тот канал", ephemeral=True)
                 return
@@ -550,7 +551,7 @@ class SubButton(Button):
             await t.edit(archived=False, locked=False)
             await create_voice_channel(i, name)
 
-            mention = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLE_IDS if i.guild.get_role(rid)])
+            mention = ""
             if self.typ == "жалоба":
                 for rid in SUPPORT_ROLE_IDS:
                     r = i.guild.get_role(rid)
@@ -562,12 +563,20 @@ class SubButton(Button):
                                 pass
                 if (o := i.guild.get_member(AUTHORIZED_USER_ID)):
                     await t.add_user(o)
+                mention = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLE_IDS if i.guild.get_role(rid)])
             else:
                 mention = f"<@{AUTHORIZED_USER_ID}>"
+                owner = i.guild.get_member(AUTHORIZED_USER_ID)
+                if owner:
+                    try:
+                        await t.add_user(owner)
+                    except:
+                        pass
 
             ticket_owners[t.id] = uid
             ticket_creation_time[t.id] = time.time()
             db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub)
+            ticket_stats["created"] += 1
 
             embed = discord.Embed(
                 title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ" if self.typ == "предложение" else "📋 НОВЫЙ ТИКЕТ",
@@ -759,51 +768,56 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
 async def cleanup_cmd(i: discord.Interaction):
     await i.response.defer(ephemeral=True)
     
-    if not is_support(i.channel):
-        await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
-        return
+    try:
+        if not is_support(i.channel):
+            await i.followup.send("❌ Только в канале поддержки", ephemeral=True)
+            return
 
-    is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
-    if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
-        await i.followup.send("❌ Нет прав", ephemeral=True)
-        return
+        is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
+        if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
+            await i.followup.send("❌ Нет прав", ephemeral=True)
+            return
 
-    active = set()
-    for ch in i.guild.channels:
-        if ch.id in SUPPORT_CHANNEL_IDS:
-            for t in ch.threads:
-                if "тикет" in t.name or t.name in ["📋-правила-поддержки", "📋-commands-security-admins"]:
-                    active.add(t.id)
+        active = set()
+        for ch in i.guild.channels:
+            if ch.id in SUPPORT_CHANNEL_IDS:
+                for t in ch.threads:
+                    if "тикет" in t.name or t.name in ["📋-правила-поддержки", "📋-commands-security-admins"]:
+                        active.add(t.id)
 
-    deleted = 0
-    for ch in i.guild.channels:
-        if isinstance(ch, discord.VoiceChannel) and "🔊" in ch.name and ch.category:
-            sc = False
-            for sid in SUPPORT_CHANNEL_IDS:
-                if (sc_ch := i.guild.get_channel(sid)) and sc_ch.category == ch.category:
-                    sc = True
-                    break
-            if not sc:
-                continue
+        deleted = 0
+        for ch in i.guild.channels:
+            if isinstance(ch, discord.VoiceChannel) and "🔊" in ch.name and ch.category:
+                sc = False
+                for sid in SUPPORT_CHANNEL_IDS:
+                    if (sc_ch := i.guild.get_channel(sid)) and sc_ch.category == ch.category:
+                        sc = True
+                        break
+                if not sc:
+                    continue
 
-            found = False
-            for tid in active:
-                if tid in voice_channels and voice_channels[tid] == ch.id:
-                    found = True
-                    break
-                t = i.guild.get_channel(tid)
-                if t and t.name[:80] in ch.name:
-                    found = True
-                    break
+                found = False
+                for tid in active:
+                    if tid in voice_channels and voice_channels[tid] == ch.id:
+                        found = True
+                        break
+                    t = i.guild.get_channel(tid)
+                    if t and t.name[:80] in ch.name:
+                        found = True
+                        break
 
-            if not found:
-                try:
-                    await ch.delete()
-                    deleted += 1
-                except:
-                    pass
+                if not found:
+                    try:
+                        await ch.delete()
+                        deleted += 1
+                    except:
+                        pass
 
-    await i.followup.send(f"🗑️ Удалено {deleted} каналов")
+        await i.followup.send(f"🗑️ Удалено {deleted} осиротевших голосовых каналов", ephemeral=True)
+
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "cleanup_cmd")
 
 @bot.tree.command(name="commands", description="Список команд для Security & Admins")
 async def commands_cmd(i: discord.Interaction):
