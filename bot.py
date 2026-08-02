@@ -42,7 +42,7 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== FLASK-ЗАГЛУШКА (ИСПРАВЛЕННАЯ) ==========
+# ========== FLASK-ЗАГЛУШКА ==========
 app = Flask('')
 
 @app.route('/')
@@ -172,5 +172,433 @@ MORNING_GIFS = [
     "https://media.tenor.com/6i2d4Y7bN8UAAAAC/good-morning.gif"
 ]
 
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ==========
 def is_support(channel):
-    return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel
+    return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
+
+async def create_voice_channel(interaction, thread_name):
+    try:
+        category = interaction.channel.category
+        if not category: 
+            return
+        for vc in category.voice_channels:
+            if thread_name[:80] in vc.name:
+                voice_channels[interaction.channel.id] = vc.id
+                return
+        vc = await interaction.guild.create_voice_channel(
+            name=f"🔊 {thread_name[:80]}",
+            category=category,
+            user_limit=10
+        )
+        voice_channels[interaction.channel.id] = vc.id
+        for role_id in SUPPORT_ROLE_IDS:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                await vc.set_permissions(role, connect=True, speak=True)
+        await vc.set_permissions(interaction.user, connect=True, speak=True)
+        await vc.set_permissions(interaction.guild.default_role, connect=False)
+    except Exception as e:
+        log_error(e, "voice_channel")
+
+async def send_welcome_with_tag(thread, user):
+    """Отправляет приветствие с тегом автора"""
+    embed = discord.Embed(
+        title="🎫 Ваш тикет создан",
+        description=f"{user.mention}, добро пожаловать в ветку поддержки!\n"
+                    f"Ожидайте ответа модератора (до 30 минут).\n"
+                    f"Для закрытия используйте кнопку ниже.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="MAKSON Support")
+    await thread.send(embed=embed)
+
+async def close_ticket(interaction, author_id, thread_id, thread_name, guild):
+    """Универсальная функция закрытия тикета"""
+    if thread_id in ticket_closed:
+        await interaction.followup.send("❌ Уже закрыт", ephemeral=True)
+        return False
+    
+    ticket_closed.add(thread_id)
+    db_close(thread_id, interaction.user.id)
+    ticket_stats["closed"] += 1
+    
+    # Удаление голосового канала
+    for vc in guild.voice_channels:
+        if thread_name[:80] in vc.name:
+            try:
+                await vc.delete()
+            except:
+                pass
+            break
+    
+    voice_channels.pop(thread_id, None)
+    ticket_owners.pop(thread_id, None)
+    ticket_creation_time.pop(thread_id, None)
+    
+    await interaction.followup.send("✅ Тикет закрыт", ephemeral=True)
+    try:
+        await interaction.channel.delete()
+    except:
+        pass
+    return True
+
+async def send_rules(thread, rules=None, mention=None):
+    if rules:
+        found = [f"{RULES_DICT[r]}" for r in [x.strip() for x in rules.split(",")] if r in RULES_DICT]
+        if not found:
+            await thread.send(embed=discord.Embed(
+                title="❌ Ошибка",
+                description=f"Правила не найдены. Доступные номера: {', '.join(RULES_DICT.keys())}",
+                color=discord.Color.red()
+            ))
+            return
+        await thread.send(embed=discord.Embed(
+            title="📋 Нарушение правил",
+            description=f"{mention or ''}\n\n" + "\n\n".join(found),
+            color=discord.Color.red()
+        ))
+        return
+    
+    embed = discord.Embed(
+        title="📋 Правила сервера",
+        description="\n\n".join(RULES_DICT.values()),
+        color=discord.Color.gold()
+    )
+    suggestion_rules_embed = discord.Embed(
+        title="💡 Правила для предложений",
+        description=(
+            "1.1. Предложения должны быть чёткими и по делу.\n"
+            "1.2. Оскорбления, флуд и спам запрещены.\n"
+            "1.3. За нарушение — ветка закрывается без предупреждения.\n"
+            "1.4. Администрация рассматривает все предложения, но не обязана их реализовывать.\n"
+            "1.5. За создание и мгновенное закрытие тикета (фальшивый тикет) — предупреждение.\n"
+            "1.6. При 4 таких тикетах подряд — тайм-аут 5 минут.\n\n"
+            "🔒 Правила действуют на всех участников."
+        ),
+        color=discord.Color.gold()
+    )
+    await thread.send(embed=embed)
+    await thread.send(embed=suggestion_rules_embed)
+
+# ========== КНОПКИ ==========
+class CloseButton(Button):
+    def __init__(self):
+        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            if i.channel.id in (RULES_THREAD_ID, COMMANDS_THREAD_ID):
+                await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
+                return
+
+            if i.channel.id in ticket_closed:
+                await i.followup.send("❌ Уже закрыт", ephemeral=True)
+                return
+
+            is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
+            author_id = ticket_owners.get(i.channel.id)
+
+            # Автор закрывает
+            if i.user.id == author_id:
+                ct = ticket_creation_time.get(i.channel.id)
+                if ct and time.time() - ct < 10:
+                    uid = author_id
+                    if time.time() - fake_last_time.get(uid, 0) > FAKE_RESET_TIME:
+                        fake_counter[uid] = 0
+                    fake_counter[uid] = fake_counter.get(uid, 0) + 1
+                    fake_last_time[uid] = time.time()
+                    if fake_counter[uid] >= MAX_FAKE_TICKETS:
+                        m = i.guild.get_member(uid)
+                        if m:
+                            await m.timeout(discord.utils.utcnow() + timedelta(seconds=FAKE_TICKET_TIMEOUT))
+                            await i.followup.send(f"⏰ {m.mention} тайм-аут {FAKE_TICKET_TIMEOUT//60} мин за фальшивые тикеты", ephemeral=True)
+                            fake_counter[uid] = 0
+                    else:
+                        await i.followup.send(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
+                
+                await close_ticket(i, author_id, i.channel.id, i.channel.name, i.guild)
+                return
+
+            # Модератор закрывает
+            if not is_moderator and i.user.id != AUTHORIZED_USER_ID and not i.user.guild_permissions.administrator:
+                await i.followup.send("❌ Нет прав", ephemeral=True)
+                return
+
+            if not author_id:
+                await i.followup.send("❌ Тикет не найден", ephemeral=True)
+                ticket_closed.add(i.channel.id)
+                return
+
+            if is_moderator or i.user.id == AUTHORIZED_USER_ID:
+                if author_id:
+                    violations = user_violations.get(author_id, 0)
+                    if violations >= 1:
+                        timeout_minutes = min(30 * (2 ** (violations - 1)), 480)
+                        member = i.guild.get_member(author_id)
+                        if member:
+                            try:
+                                await member.timeout(discord.utils.utcnow() + timedelta(minutes=timeout_minutes))
+                                await i.followup.send(
+                                    f"⏰ {member.mention} получил тайм-аут {timeout_minutes} минут "
+                                    f"(нарушение #{violations}, прогрессивное наказание)",
+                                    ephemeral=True
+                                )
+                            except:
+                                pass
+                        user_violations[author_id] = 0
+
+            await close_ticket(i, author_id, i.channel.id, i.channel.name, i.guild)
+
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "CloseButton")
+
+class RulesButton(Button):
+    def __init__(self):
+        super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=0)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            await send_rules(i.channel)
+            await i.followup.send("✅ Правила отправлены в ветку", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "RulesButton")
+
+class HelpButton(Button):
+    def __init__(self):
+        super().__init__(label="❓ Помощь", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            embed = discord.Embed(
+                title="❓ Помощь по боту",
+                description=(
+                    "**Как создать тикет:**\n"
+                    "1. Нажмите **Жалоба** или **Предложение**.\n"
+                    "2. Выберите подкатегорию.\n"
+                    "3. Ожидайте ответа модератора (до 30 минут).\n\n"
+                    "**Как закрыть тикет:**\n"
+                    "• Нажмите кнопку **🔒 Закрыть тикет** внизу ветки.\n\n"
+                    "**Правила:**\n"
+                    "• Нажмите **📋 Правила** для просмотра полных правил.\n\n"
+                    "⚠️ **Важно:**\n"
+                    "• Не создавайте более 2 тикетов одновременно.\n"
+                    "• Быстрое закрытие тикета (< 10 сек) может привести к тайм-ауту.\n"
+                    "• Ответ даётся в течение 30 минут."
+                ),
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text="MAKSON Project • Поддержка 24/7")
+            await i.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "HelpButton")
+
+class SubButton(Button):
+    def __init__(self, label, ticket_type, subcategory, style=discord.ButtonStyle.primary):
+        super().__init__(label=label, style=style, row=0)
+        self.ticket_type = ticket_type
+        self.subcategory = subcategory
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            if not is_support(i.channel):
+                await i.followup.send("❌ Не тот канал", ephemeral=True)
+                return
+
+            ok, msg = check_spam()
+            if not ok:
+                await i.followup.send(msg, ephemeral=True)
+                return
+
+            # Проверка лимитов
+            active = 0
+            for thread in i.channel.threads:
+                if thread.owner_id == i.user.id and thread.id not in ticket_closed:
+                    active += 1
+            if active >= MAX_TICKETS_PER_USER:
+                await i.followup.send(f"❌ У вас уже {active} открытых тикетов (макс. {MAX_TICKETS_PER_USER})", ephemeral=True)
+                return
+
+            # Создание ветки
+            thread_name = f"{self.ticket_type} - {i.user.display_name}"
+            thread = await i.channel.create_thread(
+                name=thread_name[:100],
+                auto_archive_duration=60,
+                type=discord.ChannelType.private_thread
+            )
+
+            # Добавление автора и модераторов
+            await thread.add_user(i.user)
+            for role_id in SUPPORT_ROLE_IDS:
+                role = i.guild.get_role(role_id)
+                if role:
+                    for member in role.members:
+                        await thread.add_user(member)
+
+            # Сохранение данных
+            ticket_owners[thread.id] = i.user.id
+            ticket_creation_time[thread.id] = time.time()
+            db_add(thread.id, i.user.id, i.user.display_name, self.ticket_type, self.subcategory)
+            ticket_stats["created"] += 1
+
+            # Голосовой канал
+            await create_voice_channel(i, thread_name)
+
+            # Отправка приветствия с тегом
+            await send_welcome_with_tag(thread, i.user)
+
+            # Кнопка закрытия
+            view = View()
+            view.add_item(CloseButton())
+            await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
+
+            await i.followup.send(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
+
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "SubButton")
+
+class SubcategoryView(View):
+    def __init__(self, ticket_type):
+        super().__init__(timeout=60)
+        self.ticket_type = ticket_type
+        
+        subcategories = {
+            "Жалоба": ["🚨 Нарушение правил", "👤 Нарушение прав", "💢 Конфликт", "📢 Другое"],
+            "Предложение": ["💡 Новая идея", "⚡ Улучшение", "🐛 Баг", "📢 Другое"]
+        }
+        
+        for sub in subcategories.get(ticket_type, []):
+            self.add_item(SubButton(sub, ticket_type, sub, discord.ButtonStyle.success if ticket_type == "Предложение" else discord.ButtonStyle.danger))
+
+class MainView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(SubButton("🔴 Жалоба", "Жалоба", "Основная", discord.ButtonStyle.danger))
+        self.add_item(SubButton("🟢 Предложение", "Предложение", "Основная", discord.ButtonStyle.success))
+        self.add_item(RulesButton())
+        self.add_item(HelpButton())
+
+# ========== СЛЕШ-КОМАНДЫ ==========
+@bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
+async def setup_tickets(i: discord.Interaction):
+    await i.response.defer(ephemeral=False)
+    
+    if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
+        await i.followup.send("❌ Нет доступа")
+        return
+
+    lid = last_menu_message_id.get(i.channel.id)
+    if lid:
+        try:
+            old = await i.channel.fetch_message(lid)
+            await old.delete()
+        except:
+            pass
+
+    view = MainView()
+    embed = discord.Embed(
+        title="🎫 **Техническая поддержка**",
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Выберите тип обращения:**\n\n"
+            "🔴 **Жалоба** — сообщить о нарушении или проблеме\n"
+            "🟢 **Предложение** — поделиться идеей или улучшением\n"
+            "📋 **Правила** — ознакомиться с правилами сервера\n"
+            "❓ **Помощь** — инструкция по использованию бота\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🕒 **Ответ в течение 30 минут**\n"
+            "👮 **Модераторы всегда на связи**"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
+    embed.set_image(url="https://raw.githubusercontent.com/sanychl2907kov-dotcom/Maksonbot/e5942279a46c05f35b18e35d92aa6c92c0ff71ce/banner.png")
+
+    await i.followup.send(embed=embed, view=view)
+    last_menu_message_id[i.channel.id] = (await i.original_response()).id
+
+@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю (только для модераторов)")
+async def timeout_cmd(i: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Нарушение правил"):
+    await i.response.defer(ephemeral=True)
+    
+    if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
+        await i.followup.send("❌ Нет прав", ephemeral=True)
+        return
+    
+    try:
+        await member.timeout(discord.utils.utcnow() + timedelta(minutes=minutes), reason=reason)
+        await i.followup.send(f"⏰ {member.mention} получил тайм-аут на {minutes} минут. Причина: {reason}", ephemeral=True)
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "timeout_cmd")
+
+@bot.tree.command(name="send_rules", description="Отправить правила в текущий канал")
+async def send_rules_cmd(i: discord.Interaction, rules: str = None, mention: str = None):
+    await i.response.defer(ephemeral=True)
+    
+    if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
+        await i.followup.send("❌ Нет прав", ephemeral=True)
+        return
+    
+    await send_rules(i.channel, rules, mention)
+    await i.followup.send("✅ Правила отправлены", ephemeral=True)
+
+@bot.tree.command(name="cleanup", description="Очистить сообщения в канале")
+async def cleanup_cmd(i: discord.Interaction, amount: int = 10):
+    await i.response.defer(ephemeral=True)
+    
+    if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
+        await i.followup.send("❌ Нет прав", ephemeral=True)
+        return
+    
+    try:
+        deleted = await i.channel.purge(limit=min(amount, 100))
+        await i.followup.send(f"✅ Удалено {len(deleted)} сообщений", ephemeral=True)
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "cleanup_cmd")
+
+@bot.tree.command(name="commands", description="Показать список команд")
+async def commands_cmd(i: discord.Interaction):
+    embed = discord.Embed(
+        title="📋 Команды бота",
+        description=(
+            "/setup_tickets - Создать меню тикетов\n"
+            "/timeout <пользователь> <минуты> [причина] - Выдать тайм-аут\n"
+            "/send_rules [номера] [упоминание] - Отправить правила\n"
+            "/cleanup [количество] - Очистить сообщения\n"
+            "/commands - Показать этот список"
+        ),
+        color=discord.Color.blue()
+    )
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+# ========== ЗАПУСК ==========
+@bot.event
+async def on_ready():
+    print(f"✅ Бот {bot.user} запущен")
+    await bot.tree.sync()
+    print("✅ Слеш-команды синхронизированы")
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    
+    # Повторный тег автора в его ветке
+    if message.channel.id in ticket_owners:
+        if message.author.id == ticket_owners.get(message.channel.id):
+            if not message.content.startswith('!'):
+                await asyncio.sleep(0.5)
+                await message.channel.send(f"{message.author.mention}, ваш запрос замечен, ожидайте модератора.")
+    
+    await bot.process_commands(message)
+
+bot.run(TOKEN)
