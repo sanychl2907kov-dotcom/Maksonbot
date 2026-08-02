@@ -44,14 +44,26 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ========== FLASK-ЗАГЛУШКА ==========
 app = Flask('')
+
 @app.route('/')
-def home(): return "Бот MAKSON работает 24/7!"
-@app.route('/ping') def ping(): return "pong", 200
-@app.route('/health') def health(): return "OK", 200
-@app.route('/keepalive') def keepalive(): return "alive", 200
+def home(): 
+    return "Бот MAKSON работает 24/7!"
+
+@app.route('/ping')
+def ping(): 
+    return "pong", 200
+
+@app.route('/health')
+def health(): 
+    return "OK", 200
+
+@app.route('/keepalive')
+def keepalive(): 
+    return "alive", 200
 
 def run_flask(): 
     app.run(host='0.0.0.0', port=10000, threaded=True)
+
 threading.Thread(target=run_flask, daemon=True).start()
 print("✅ Flask-заглушка запущена на порту 10000")
 
