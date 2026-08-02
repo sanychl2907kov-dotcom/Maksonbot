@@ -27,6 +27,7 @@ if not TOKEN:
 # ========== КОНФИГ ==========
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
+MODERATOR_ROLE_IDS = [349491236891262988, 526068726748020739]  # Роли для тега в жалобах
 AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
 MAX_TICKETS_GLOBAL = 20
@@ -104,7 +105,7 @@ c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT, user_id TEXT, user_name TEXT,
-    ticket_type TEXT, subcategory TEXT,
+    ticket_type TEXT, subcategory TEXT, reason TEXT,
     created_at TEXT, closed_at TEXT, closed_by TEXT, status TEXT
 )''')
 c.execute('''CREATE TABLE IF NOT EXISTS rules_threads (
@@ -114,10 +115,10 @@ c.execute('''CREATE TABLE IF NOT EXISTS rules_threads (
 )''')
 conn.commit()
 
-def db_add(thread_id, user_id, user_name, ticket_type, subcategory):
-    c.execute('''INSERT INTO tickets (thread_id, user_id, user_name, ticket_type, subcategory, created_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
-              (str(thread_id), str(user_id), user_name, ticket_type, subcategory, datetime.now().isoformat(), 'open'))
+def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason=""):
+    c.execute('''INSERT INTO tickets (thread_id, user_id, user_name, ticket_type, subcategory, reason, created_at, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+              (str(thread_id), str(user_id), user_name, ticket_type, subcategory, reason, datetime.now().isoformat(), 'open'))
     conn.commit()
 
 def db_close(thread_id, closed_by):
@@ -193,12 +194,6 @@ RULES_DICT = {
     )
 }
 
-MORNING_GIFS = [
-    "https://media.tenor.com/Rq2k3c5xY6gAAAAC/good-morning.gif",
-    "https://media.tenor.com/5z1h7k9W3jUAAAAC/morning.gif",
-    "https://media.tenor.com/6i2d4Y7bN8UAAAAC/good-morning.gif"
-]
-
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def is_support(channel):
     return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
@@ -237,16 +232,93 @@ async def create_voice_channel(interaction, thread_name):
     except Exception as e:
         log_error(e, "voice_channel")
 
-async def send_welcome_with_tag(thread, user):
+async def send_welcome_with_tag(thread, user, ticket_type="Жалоба", reason="", subcategory=""):
+    """Отправляет приветствие в зависимости от типа тикета с указанием статуса"""
+    
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    
+    if ticket_type == "Предложение":
+        embed = discord.Embed(
+            title="💡 **Новое предложение**",
+            description=(
+                f"{user.mention}, напишите вашу идею ниже.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Статус:** 🟢 Открыт\n"
+                f"**Создан:** {now}\n"
+                f"**Тип:** Предложение\n"
+                f"**Категория:** {subcategory}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "**1. Ваше предложение или идея**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "✏️ *Опишите свою идею одним сообщением.*\n"
+                "📌 *Модераторы рассмотрят её в течение 24 часов.*"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="MAKSON • Предложения")
+        await thread.send(embed=embed)
+        
+        view = View()
+        view.add_item(CloseButton())
+        await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
+        return
+    
+    if ticket_type == "Жалоба":
+        # Формируем тег модераторов
+        mod_mentions = " ".join([f"<@&{role_id}>" for role_id in MODERATOR_ROLE_IDS])
+        
+        embed = discord.Embed(
+            title="🚨 **Новая жалоба**",
+            description=(
+                f"{mod_mentions}\n{user.mention}, заполните форму ниже.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Статус:** 🟢 Открыт\n"
+                f"**Создан:** {now}\n"
+                f"**Тип:** Жалоба\n"
+                f"**Причина:** {reason}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "**1. Ник нарушителя**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "✏️ *Укажите ник или ID нарушителя.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "**2. Дата произошедшего**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📅 *Укажите дату и время инцидента.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "**3. Доказательство или скриншот**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🖼️ *Прикрепите скриншот или опишите доказательства.*\n\n"
+                "📌 *Модераторы рассмотрят жалобу в течение 30 минут.*"
+            ),
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="MAKSON • Жалобы")
+        await thread.send(embed=embed)
+        
+        view = View()
+        view.add_item(CloseButton())
+        await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
+        return
+    
+    # Стандартный шаблон
     embed = discord.Embed(
-        title="🎫 Ваш тикет создан",
-        description=f"{user.mention}, добро пожаловать в ветку поддержки!\n"
-                    f"Ожидайте ответа модератора (до 30 минут).\n"
-                    f"Для закрытия используйте кнопку ниже.",
+        title="🎫 **Ваш тикет создан**",
+        description=(
+            f"{user.mention}, добро пожаловать в ветку поддержки!\n\n"
+            f"**Статус:** 🟢 Открыт\n"
+            f"**Создан:** {now}\n"
+            f"**Тип:** {ticket_type}\n\n"
+            f"Ожидайте ответа модератора (до 30 минут).\n"
+            f"Для закрытия используйте кнопку ниже."
+        ),
         color=discord.Color.green()
     )
     embed.set_footer(text="MAKSON Support")
     await thread.send(embed=embed)
+    
+    view = View()
+    view.add_item(CloseButton())
+    await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
 
 async def close_ticket(interaction, author_id, thread_id, thread_name, guild):
     if thread_id in ticket_closed:
@@ -319,7 +391,6 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=suggestion_rules_embed)
 
 async def create_rules_thread(interaction):
-    """Создает отдельную ветку с правилами поддержки"""
     try:
         existing_thread_id = db_get_rules_thread(interaction.channel.id)
         if existing_thread_id:
@@ -471,7 +542,7 @@ class HelpButton(Button):
                 description=(
                     "**Как создать тикет:**\n"
                     "1. Нажмите **Жалоба** или **Предложение**.\n"
-                    "2. Выберите подкатегорию.\n"
+                    "2. Выберите причину/категорию.\n"
                     "3. Ожидайте ответа модератора (до 30 минут).\n\n"
                     "**Как закрыть тикет:**\n"
                     "• Нажмите кнопку **🔒 Закрыть тикет** внизу ветки.\n\n"
@@ -490,11 +561,11 @@ class HelpButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "HelpButton")
 
-class SubButton(Button):
-    def __init__(self, label, ticket_type, subcategory, style=discord.ButtonStyle.primary):
+class ReasonButton(Button):
+    def __init__(self, label, ticket_type, reason, style=discord.ButtonStyle.primary):
         super().__init__(label=label, style=style, row=0)
         self.ticket_type = ticket_type
-        self.subcategory = subcategory
+        self.reason = reason
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -555,42 +626,77 @@ class SubButton(Button):
 
             ticket_owners[thread.id] = i.user.id
             ticket_creation_time[thread.id] = time.time()
-            db_add(thread.id, i.user.id, i.user.display_name, self.ticket_type, self.subcategory)
+            db_add(thread.id, i.user.id, i.user.display_name, self.ticket_type, self.reason, self.reason)
             ticket_stats["created"] += 1
 
             await create_voice_channel(i, thread_name)
-            await send_welcome_with_tag(thread, i.user)
-
-            view = View()
-            view.add_item(CloseButton())
-            await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
+            
+            await send_welcome_with_tag(thread, i.user, self.ticket_type, self.reason, self.reason)
 
             await i.followup.send(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
 
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-            log_error(e, "SubButton")
+            log_error(e, "ReasonButton")
 
-class SubcategoryView(View):
+class TicketTypeView(View):
     def __init__(self, ticket_type):
         super().__init__(timeout=60)
         self.ticket_type = ticket_type
         
-        subcategories = {
-            "Жалоба": ["🚨 Нарушение правил", "👤 Нарушение прав", "💢 Конфликт", "📢 Другое"],
-            "Предложение": ["💡 Новая идея", "⚡ Улучшение", "🐛 Баг", "📢 Другое"]
-        }
+        if ticket_type == "Жалоба":
+            reasons = [
+                ("🚨 Нарушение правил", discord.ButtonStyle.danger),
+                ("👤 Оскорбление", discord.ButtonStyle.danger),
+                ("💢 Конфликт", discord.ButtonStyle.danger),
+                ("📢 Спам/Флуд", discord.ButtonStyle.danger),
+                ("🔞 NSFW-контент", discord.ButtonStyle.danger),
+                ("📌 Другое", discord.ButtonStyle.secondary)
+            ]
+        else:  # Предложение
+            reasons = [
+                ("💡 Новая идея", discord.ButtonStyle.success),
+                ("⚡ Улучшение", discord.ButtonStyle.success),
+                ("🐛 Исправление бага", discord.ButtonStyle.success),
+                ("📌 Другое", discord.ButtonStyle.secondary)
+            ]
         
-        for sub in subcategories.get(ticket_type, []):
-            self.add_item(SubButton(sub, ticket_type, sub, discord.ButtonStyle.success if ticket_type == "Предложение" else discord.ButtonStyle.danger))
+        for label, style in reasons:
+            self.add_item(ReasonButton(label, ticket_type, label, style))
 
 class MainView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(SubButton("🔴 Жалоба", "Жалоба", "Основная", discord.ButtonStyle.danger))
-        self.add_item(SubButton("🟢 Предложение", "Предложение", "Основная", discord.ButtonStyle.success))
+        self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="complaint"))
+        self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="suggestion"))
         self.add_item(RulesButton())
         self.add_item(HelpButton())
+
+# ========== ОБРАБОТЧИК КНОПОК MAINVIEW ==========
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = interaction.data.get("custom_id")
+        
+        if custom_id == "complaint":
+            view = TicketTypeView("Жалоба")
+            embed = discord.Embed(
+                title="🚨 **Выберите причину жалобы**",
+                description="Нажмите на кнопку с подходящей причиной:",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+        
+        if custom_id == "suggestion":
+            view = TicketTypeView("Предложение")
+            embed = discord.Embed(
+                title="💡 **Выберите категорию предложения**",
+                description="Нажмите на кнопку с подходящей категорией:",
+                color=discord.Color.gold()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
