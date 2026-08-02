@@ -557,6 +557,34 @@ class HelpButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "HelpButton")
 
+class MainComplaintButton(Button):
+    def __init__(self):
+        super().__init__(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="main_complaint")
+
+    async def callback(self, i: discord.Interaction):
+        view = TicketTypeView("Жалоба")
+        embed = discord.Embed(
+            title="🚨 **Выберите причину жалобы**",
+            description="Нажмите на кнопку с подходящей причиной:",
+            color=discord.Color.red()
+        )
+        await i.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class MainSuggestionButton(Button):
+    def __init__(self):
+        super().__init__(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="main_suggestion")
+
+    async def callback(self, i: discord.Interaction):
+        view = TicketTypeView("Предложение")
+        embed = discord.Embed(
+            title="💡 **Выберите категорию предложения**",
+            description="Нажмите на кнопку с подходящей категорией:",
+            color=discord.Color.gold()
+        )
+        await i.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
 class ReasonButton(Button):
     def __init__(self, label, ticket_type, reason, style=discord.ButtonStyle.primary):
         super().__init__(label=label, style=style, row=0, custom_id=f"reason_{ticket_type}_{reason[:20]}")
@@ -663,36 +691,10 @@ class TicketTypeView(View):
 class MainView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="main_complaint"))
-        self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="main_suggestion"))
+        self.add_item(MainComplaintButton())
+        self.add_item(MainSuggestionButton())
         self.add_item(RulesButton())
         self.add_item(HelpButton())
-
-# ========== ОБРАБОТЧИК КНОПОК ==========
-@bot.event
-async def on_interaction(interaction: discord.Interaction):
-    if interaction.type == discord.InteractionType.component:
-        custom_id = interaction.data.get("custom_id")
-        
-        if custom_id == "main_complaint":
-            view = TicketTypeView("Жалоба")
-            embed = discord.Embed(
-                title="🚨 **Выберите причину жалобы**",
-                description="Нажмите на кнопку с подходящей причиной:",
-                color=discord.Color.red()
-            )
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            return
-        
-        if custom_id == "main_suggestion":
-            view = TicketTypeView("Предложение")
-            embed = discord.Embed(
-                title="💡 **Выберите категорию предложения**",
-                description="Нажмите на кнопку с подходящей категорией:",
-                color=discord.Color.gold()
-            )
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            return
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
