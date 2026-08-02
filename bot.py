@@ -27,7 +27,7 @@ if not TOKEN:
 # ========== КОНФИГ ==========
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
-MODERATOR_ROLE_IDS = [349491236891262988, 526068726748020739]  # Роли для тега в жалобах
+MODERATOR_ROLE_IDS = [349491236891262988, 526068726748020739]
 AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
 MAX_TICKETS_GLOBAL = 20
@@ -233,8 +233,6 @@ async def create_voice_channel(interaction, thread_name):
         log_error(e, "voice_channel")
 
 async def send_welcome_with_tag(thread, user, ticket_type="Жалоба", reason="", subcategory=""):
-    """Отправляет приветствие в зависимости от типа тикета с указанием статуса"""
-    
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     
     if ticket_type == "Предложение":
@@ -264,7 +262,6 @@ async def send_welcome_with_tag(thread, user, ticket_type="Жалоба", reason
         return
     
     if ticket_type == "Жалоба":
-        # Формируем тег модераторов
         mod_mentions = " ".join([f"<@&{role_id}>" for role_id in MODERATOR_ROLE_IDS])
         
         embed = discord.Embed(
@@ -300,7 +297,6 @@ async def send_welcome_with_tag(thread, user, ticket_type="Жалоба", reason
         await thread.send("🔒 Для закрытия нажмите кнопку ниже:", view=view)
         return
     
-    # Стандартный шаблон
     embed = discord.Embed(
         title="🎫 **Ваш тикет создан**",
         description=(
@@ -444,7 +440,7 @@ async def create_rules_thread(interaction):
 # ========== КНОПКИ ==========
 class CloseButton(Button):
     def __init__(self):
-        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1)
+        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=1, custom_id="close_ticket")
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -511,7 +507,7 @@ class CloseButton(Button):
 
 class RulesButton(Button):
     def __init__(self):
-        super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=0)
+        super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=0, custom_id="rules_button")
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -532,7 +528,7 @@ class RulesButton(Button):
 
 class HelpButton(Button):
     def __init__(self):
-        super().__init__(label="❓ Помощь", style=discord.ButtonStyle.secondary, row=1)
+        super().__init__(label="❓ Помощь", style=discord.ButtonStyle.secondary, row=1, custom_id="help_button")
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -563,7 +559,7 @@ class HelpButton(Button):
 
 class ReasonButton(Button):
     def __init__(self, label, ticket_type, reason, style=discord.ButtonStyle.primary):
-        super().__init__(label=label, style=style, row=0)
+        super().__init__(label=label, style=style, row=0, custom_id=f"reason_{ticket_type}_{reason[:20]}")
         self.ticket_type = ticket_type
         self.reason = reason
 
@@ -653,7 +649,7 @@ class TicketTypeView(View):
                 ("🔞 NSFW-контент", discord.ButtonStyle.danger),
                 ("📌 Другое", discord.ButtonStyle.secondary)
             ]
-        else:  # Предложение
+        else:
             reasons = [
                 ("💡 Новая идея", discord.ButtonStyle.success),
                 ("⚡ Улучшение", discord.ButtonStyle.success),
@@ -667,18 +663,18 @@ class TicketTypeView(View):
 class MainView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="complaint"))
-        self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="suggestion"))
+        self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="main_complaint"))
+        self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="main_suggestion"))
         self.add_item(RulesButton())
         self.add_item(HelpButton())
 
-# ========== ОБРАБОТЧИК КНОПОК MAINVIEW ==========
+# ========== ОБРАБОТЧИК КНОПОК ==========
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get("custom_id")
         
-        if custom_id == "complaint":
+        if custom_id == "main_complaint":
             view = TicketTypeView("Жалоба")
             embed = discord.Embed(
                 title="🚨 **Выберите причину жалобы**",
@@ -688,7 +684,7 @@ async def on_interaction(interaction: discord.Interaction):
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
         
-        if custom_id == "suggestion":
+        if custom_id == "main_suggestion":
             view = TicketTypeView("Предложение")
             embed = discord.Embed(
                 title="💡 **Выберите категорию предложения**",
