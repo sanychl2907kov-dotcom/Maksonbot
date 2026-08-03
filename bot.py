@@ -912,6 +912,8 @@ class TimeoutReasonSelect(Select):
             )
             await i.followup.send(embed=embed, ephemeral=True)
             
+        except discord.Forbidden:
+            await i.followup.send(f"❌ Нет прав для выдачи тайм-аута {self.user.mention}", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "TimeoutReasonSelect")
@@ -998,9 +1000,7 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
             await i.followup.send("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
             return
 
-        if user not in i.channel.members:
-            await i.followup.send(f"❌ {user.mention} не участник этой ветки", ephemeral=True)
-            return
+        # Проверка на участника убрана — Discord сам проверит доступ
 
         view = TimeoutView(user, minutes)
         embed = discord.Embed(
