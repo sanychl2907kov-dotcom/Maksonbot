@@ -740,6 +740,12 @@ class SubButton(Button):
             await t.edit(archived=False, locked=False)
             await create_voice_channel(i, name)
 
+            # ===== ДОБАВЛЯЕМ АВТОРА ВСЕГДА =====
+            try:
+                await t.add_user(i.user)
+            except:
+                pass
+
             mention = ""
             if self.typ == "жалоба":
                 for rid in SUPPORT_ROLE_IDS:
@@ -751,16 +757,20 @@ class SubButton(Button):
                             except:
                                 pass
                 if (o := i.guild.get_member(AUTHORIZED_USER_ID)):
-                    await t.add_user(o)
+                    try:
+                        await t.add_user(o)
+                    except:
+                        pass
                 mention = " ".join([f"<@&{rid}>" for rid in SUPPORT_ROLE_IDS if i.guild.get_role(rid)])
             else:
-                mention = f"<@{AUTHORIZED_USER_ID}>"
+                # ===== ПРЕДЛОЖЕНИЕ: ДОБАВЛЯЕМ ТОЛЬКО АВТОРА И ТЕБЯ =====
                 owner = i.guild.get_member(AUTHORIZED_USER_ID)
                 if owner:
                     try:
                         await t.add_user(owner)
                     except:
                         pass
+                mention = f"<@{AUTHORIZED_USER_ID}>"
 
             ticket_owners[t.id] = uid
             ticket_creation_time[t.id] = time.time()
