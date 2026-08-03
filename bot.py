@@ -733,6 +733,7 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
 
 @bot.tree.command(name="send_rules", description="Отправить правила")
 async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord.Member = None):
+    global RULES_THREAD_ID  # <--- ПЕРВАЯ СТРОКА!
     await i.response.defer(ephemeral=True)
     
     if not is_support(i.channel):
@@ -753,7 +754,6 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
         await i.followup.send("✅ Правила отправлены")
     else:
         if i.channel.name == "📋-правила-поддержки":
-            global RULES_THREAD_ID
             RULES_THREAD_ID = i.channel.id
             await send_rules(i.channel)
             await i.followup.send("✅ Правила обновлены")
@@ -770,7 +770,6 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
                     auto_archive_duration=10080,
                     type=discord.ChannelType.public_thread
                 )
-                global RULES_THREAD_ID
                 RULES_THREAD_ID = t.id
                 await t.add_user(i.user)
                 await asyncio.sleep(1)
