@@ -137,6 +137,10 @@ def db_set_rules_thread(channel_id, thread_id):
               (str(channel_id), str(thread_id), datetime.now().isoformat()))
     conn.commit()
 
+def db_delete_rules_thread(channel_id):
+    c.execute("DELETE FROM rules_threads WHERE channel_id = ?", (str(channel_id),))
+    conn.commit()
+
 # ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
 ticket_creation_time = {}
@@ -195,12 +199,6 @@ RULES_DICT = {
         "7.3. Автор может открыть новый тикет только по новой проблеме."
     )
 }
-
-MORNING_GIFS = [
-    "https://media.tenor.com/Rq2k3c5xY6gAAAAC/good-morning.gif",
-    "https://media.tenor.com/5z1h7k9W3jUAAAAC/morning.gif",
-    "https://media.tenor.com/6i2d4Y7bN8UAAAAC/good-morning.gif"
-]
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def is_support(channel):
@@ -379,28 +377,48 @@ async def send_rules(thread, rules=None, mention=None):
 
 async def create_rules_thread(interaction):
     try:
+        # ===== 1. ПРОВЕРКА ПО БД =====
         existing_thread_id = db_get_rules_thread(interaction.channel.id)
         if existing_thread_id:
             try:
                 thread = interaction.guild.get_thread(existing_thread_id)
                 if thread:
+                    global RULES_THREAD_ID
+                    RULES_THREAD_ID = thread.id
                     return thread
                 else:
-                    c.execute("DELETE FROM rules_threads WHERE channel_id = ?", (str(interaction.channel.id),))
-                    conn.commit()
-            except:
-                pass
+                    # Ветка удалена — удаляем запись из БД
+                    db_delete_rules_thread(interaction.channel.id)
+                    global RULES_THREAD_ID
+                    RULES_THREAD_ID = None
+            except Exception as e:
+                log_error(e, "create_rules_thread: проверка БД")
+                db_delete_rules_thread(interaction.channel.id)
+                global RULES_THREAD_ID
+                RULES_THREAD_ID = None
+        
+        # ===== 2. ПРОВЕРКА ЧЕРЕЗ ПЕРЕБОР ТРЕДОВ (ЗАПАСНОЙ ВАРИАНТ) =====
+        for t in interaction.channel.threads:
+            if t.name == "📋-правила-поддержки":
+                db_set_rules_thread(interaction.channel.id, t.id)
+                global RULES_THREAD_ID
+                RULES_THREAD_ID = t.id
+                return t
+        
+        # ===== 3. ВЕТКИ НЕТ — СОЗДАЁМ НОВУЮ =====
         thread = await interaction.channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
             type=discord.ChannelType.public_thread
         )
+        
         embed = discord.Embed(
             title="📋 Правила сервера",
             description="\n\n".join(RULES_DICT.values()),
             color=discord.Color.gold()
         )
         await thread.send(embed=embed)
+        
         suggestion_embed = discord.Embed(
             title="💡 Правила для предложений",
             description=(
@@ -416,12 +434,17 @@ async def create_rules_thread(interaction):
         )
         await thread.send(embed=suggestion_embed)
         await thread.send("🔒 Ветка с правилами создана. Она будет автоматически архивироваться через 7 дней.")
+        
         db_set_rules_thread(interaction.channel.id, thread.id)
         global RULES_THREAD_ID
         RULES_THREAD_ID = thread.id
+        
         return thread
+        
     except Exception as e:
         log_error(e, "create_rules_thread")
+        global RULES_THREAD_ID
+        RULES_THREAD_ID = None
         return None
 
 # ========== КНОПКИ ==========
@@ -928,6 +951,7 @@ async def on_ready():
                 for t in ch.threads:
                     if t.name == "📋-правила-поддержки":
                         RULES_THREAD_ID = t.id
+                        db_set_rules_thread(ch.id, t.id)
                     elif t.name == "📋-commands-security-admins":
                         COMMANDS_THREAD_ID = t.id
                     elif "тикет" in t.name:
@@ -954,10 +978,6 @@ async def on_message(message):
         return
 
     content = message.content.lower()
-    
-    if "доброе утро" in content and MORNING_GIFS:
-        await message.channel.send(random.choice(MORNING_GIFS))
-        return
 
     if message.channel.id == TARGET_CHANNEL_ID or message.author.id in TARGET_USER_IDS or any(w in content for w in TRIGGER_WORDS):
         try:
