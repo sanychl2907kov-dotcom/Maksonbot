@@ -376,36 +376,29 @@ async def send_rules(thread, rules=None, mention=None):
     await thread.send(embed=suggestion_rules_embed)
 
 async def create_rules_thread(interaction):
+    global RULES_THREAD_ID
     try:
-        # ===== 1. ПРОВЕРКА ПО БД =====
         existing_thread_id = db_get_rules_thread(interaction.channel.id)
         if existing_thread_id:
             try:
                 thread = interaction.guild.get_thread(existing_thread_id)
                 if thread:
-                    global RULES_THREAD_ID
                     RULES_THREAD_ID = thread.id
                     return thread
                 else:
-                    # Ветка удалена — удаляем запись из БД
                     db_delete_rules_thread(interaction.channel.id)
-                    global RULES_THREAD_ID
                     RULES_THREAD_ID = None
             except Exception as e:
                 log_error(e, "create_rules_thread: проверка БД")
                 db_delete_rules_thread(interaction.channel.id)
-                global RULES_THREAD_ID
                 RULES_THREAD_ID = None
         
-        # ===== 2. ПРОВЕРКА ЧЕРЕЗ ПЕРЕБОР ТРЕДОВ (ЗАПАСНОЙ ВАРИАНТ) =====
         for t in interaction.channel.threads:
             if t.name == "📋-правила-поддержки":
                 db_set_rules_thread(interaction.channel.id, t.id)
-                global RULES_THREAD_ID
                 RULES_THREAD_ID = t.id
                 return t
         
-        # ===== 3. ВЕТКИ НЕТ — СОЗДАЁМ НОВУЮ =====
         thread = await interaction.channel.create_thread(
             name="📋-правила-поддержки",
             auto_archive_duration=10080,
@@ -436,14 +429,12 @@ async def create_rules_thread(interaction):
         await thread.send("🔒 Ветка с правилами создана. Она будет автоматически архивироваться через 7 дней.")
         
         db_set_rules_thread(interaction.channel.id, thread.id)
-        global RULES_THREAD_ID
         RULES_THREAD_ID = thread.id
         
         return thread
         
     except Exception as e:
         log_error(e, "create_rules_thread")
-        global RULES_THREAD_ID
         RULES_THREAD_ID = None
         return None
 
@@ -779,6 +770,7 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
                     auto_archive_duration=10080,
                     type=discord.ChannelType.public_thread
                 )
+                global RULES_THREAD_ID
                 RULES_THREAD_ID = t.id
                 await t.add_user(i.user)
                 await asyncio.sleep(1)
