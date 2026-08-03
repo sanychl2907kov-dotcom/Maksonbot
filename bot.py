@@ -38,7 +38,7 @@ FAKE_RESET_TIME = 300
 TARGET_CHANNEL_ID = 1478741064054603828
 TARGET_USER_IDS = [560386166885580800]
 TRIGGER_WORDS = ["макси", "максон", "maksy", "maks", "maxi", "maxon"]
-AUTO_CLOSE_MINUTES = 30  # Авто-закрытие, если автор не писал 30 минут
+AUTO_CLOSE_MINUTES = 30
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -382,14 +382,11 @@ async def close_ticket(interaction, author_id, thread_id, thread_name, guild):
     return True
 
 async def close_ticket_auto(thread, reason="Бездействие"):
-    """Автоматическое закрытие тикета с указанием причины"""
     if thread.id in ticket_closed:
         return
-    
     ticket_closed.add(thread.id)
     db_close(thread.id, "Auto")
     ticket_stats["closed"] += 1
-    
     vc_id = voice_channels.get(thread.id)
     if vc_id:
         vc = thread.guild.get_channel(vc_id)
@@ -398,11 +395,9 @@ async def close_ticket_auto(thread, reason="Бездействие"):
                 await vc.delete()
             except:
                 pass
-    
     voice_channels.pop(thread.id, None)
     ticket_owners.pop(thread.id, None)
     ticket_creation_time.pop(thread.id, None)
-    
     try:
         await thread.send(f"⏰ Тикет автоматически закрыт: {reason}")
         await asyncio.sleep(2)
@@ -840,7 +835,6 @@ class MainView(View):
 # ========== ФОНОВАЯ ЗАДАЧА: АВТО-ЗАКРЫТИЕ ==========
 @tasks.loop(minutes=1)
 async def check_inactive_tickets():
-    """Проверяет тикеты, где автор ничего не писал"""
     now = datetime.now()
     for thread_id, author_id in list(ticket_owners.items()):
         try:
@@ -856,12 +850,45 @@ async def check_inactive_tickets():
             last_activity = datetime.fromisoformat(row[0])
             minutes_since = (now - last_activity).total_seconds() / 60
             
-            # Если автор не писал 30 минут — закрываем
             if minutes_since >= AUTO_CLOSE_MINUTES:
                 await close_ticket_auto(thread, f"Автор не написал ни одного сообщения ({AUTO_CLOSE_MINUTES} минут)")
                 
         except Exception as e:
             log_error(e, f"check_inactive_tickets: {thread_id}")
+
+# ========== ВЫБОР ПРИЧИНЫ ДЛЯ ТАЙМ-АУТА ==========
+class TimeoutReasonSelect(Select):
+    def __init__(self, user, minutes):
+        self.user = user
+        self.minutes = minutes
+        options = [
+            discord.SelectOption(label=label, value=value, description=f"Причина: {label}")
+            for label, value in TIMEOUT_REASONS
+        ]
+        super().__init__(placeholder="Выберите причину тайм-аута", options=options, row=0)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            reason = self.values[0]
+            await self.user.timeout(discord.utils.utcnow() + timedelta(minutes=self.minutes), reason=reason)
+            db_add_warning(self.user.id, i.user.id, reason)
+            
+            embed = discord.Embed(
+                title="⏰ Тайм-аут выдан",
+                description=f"👤 {self.user.mention}\n🕒 {self.minutes} мин\n📝 {reason}\n👮 {i.user.mention}",
+                color=discord.Color.red()
+            )
+            await i.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "TimeoutReasonSelect")
+
+class TimeoutView(View):
+    def __init__(self, user, minutes):
+        super().__init__(timeout=60)
+        self.add_item(TimeoutReasonSelect(user, minutes))
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
@@ -928,8 +955,12 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
             await i.followup.send("❌ Нельзя выдать тайм-аут владельцу", ephemeral=True)
             return
 
+        if user == bot.user:
+            await i.followup.send("❌ Нельзя выдать тайм-аут боту", ephemeral=True)
+            return
+
         if not (1 <= minutes <= 40320):
-            await i.followup.send("❌ Время от 1 до 40320 минут", ephemeral=True)
+            await i.followup.send("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
             return
 
         if i.channel not in user.threads:
@@ -1046,7 +1077,7 @@ async def commands_cmd(i: discord.Interaction):
             title="📋 Команды бота",
             description=(
                 "/setup_tickets — создать меню тикетов\n"
-                "/timeout <пользователь> <минуты> — тайм-аут\n"
+                "/timeout <пользователь> <минуты> — тайм-аут с выбором причины\n"
                 "/send_rules [номер] [пользователь] — отправить правила\n"
                 "/cleanup — удалить осиротевшие голосовые каналы\n"
                 "/commands — этот список\n"
@@ -1116,47 +1147,12 @@ async def ticket_info(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "ticket_info")
 
-# ========== ВЫБОР ПРИЧИНЫ ДЛЯ ТАЙМ-АУТА ==========
-class TimeoutReasonSelect(Select):
-    def __init__(self, user, minutes):
-        self.user = user
-        self.minutes = minutes
-        options = [
-            discord.SelectOption(label=label, value=value, description=f"Причина: {label}")
-            for label, value in TIMEOUT_REASONS
-        ]
-        super().__init__(placeholder="Выберите причину тайм-аута", options=options, row=0)
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        try:
-            reason = self.values[0]
-            await self.user.timeout(discord.utils.utcnow() + timedelta(minutes=self.minutes), reason=reason)
-            db_add_warning(self.user.id, i.user.id, reason)
-            
-            embed = discord.Embed(
-                title="⏰ Тайм-аут выдан",
-                description=f"👤 {self.user.mention}\n🕒 {self.minutes} мин\n📝 {reason}\n👮 {i.user.mention}",
-                color=discord.Color.red()
-            )
-            await i.followup.send(embed=embed, ephemeral=True)
-            
-        except Exception as e:
-            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-            log_error(e, "TimeoutReasonSelect")
-
-class TimeoutView(View):
-    def __init__(self, user, minutes):
-        super().__init__(timeout=60)
-        self.add_item(TimeoutReasonSelect(user, minutes))
-
 # ========== СОБЫТИЯ ==========
 @bot.event
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
     
-    # Запускаем фоновую проверку
     check_inactive_tickets.start()
     
     await bot.wait_until_ready()
@@ -1209,7 +1205,6 @@ async def on_message(message):
 
     content = message.content.lower()
 
-    # Обновляем активность, если сообщение в тикете от автора
     if message.channel.id in ticket_owners:
         author_id = ticket_owners.get(message.channel.id)
         if message.author.id == author_id:
