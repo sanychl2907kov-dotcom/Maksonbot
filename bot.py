@@ -363,7 +363,7 @@ async def close_ticket(interaction, author_id, thread_id, thread_name, guild):
     ticket_closed.add(thread_id)
     db_close(thread_id, interaction.user.id)
     ticket_stats["closed"] += 1
-    vc_id = voice_channels.get(thread_id)
+    vc_id = voice_channels.pop(thread_id, None)
     if vc_id:
         vc = guild.get_channel(vc_id)
         if vc:
@@ -371,7 +371,6 @@ async def close_ticket(interaction, author_id, thread_id, thread_name, guild):
                 await vc.delete()
             except:
                 pass
-    voice_channels.pop(thread_id, None)
     ticket_owners.pop(thread_id, None)
     ticket_creation_time.pop(thread_id, None)
     await interaction.followup.send("✅ Тикет закрыт", ephemeral=True)
@@ -387,7 +386,7 @@ async def close_ticket_auto(thread, reason="Бездействие"):
     ticket_closed.add(thread.id)
     db_close(thread.id, "Auto")
     ticket_stats["closed"] += 1
-    vc_id = voice_channels.get(thread.id)
+    vc_id = voice_channels.pop(thread.id, None)
     if vc_id:
         vc = thread.guild.get_channel(vc_id)
         if vc:
@@ -395,7 +394,6 @@ async def close_ticket_auto(thread, reason="Бездействие"):
                 await vc.delete()
             except:
                 pass
-    voice_channels.pop(thread.id, None)
     ticket_owners.pop(thread.id, None)
     ticket_creation_time.pop(thread.id, None)
     try:
@@ -619,7 +617,7 @@ class CloseButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
-            if i.channel.id in (RULES_THREAD_ID, COMMANDS_THREAD_ID):
+            if (RULES_THREAD_ID and i.channel.id == RULES_THREAD_ID) or (COMMANDS_THREAD_ID and i.channel.id == COMMANDS_THREAD_ID):
                 await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
             if i.channel.id in ticket_closed:
@@ -708,6 +706,10 @@ class SubButton(Button):
 
             if not is_support(i.channel):
                 await i.followup.send("❌ Не тот канал", ephemeral=True)
+                return
+
+            if not i.guild:
+                await i.followup.send("❌ Ошибка: нет гильдии", ephemeral=True)
                 return
 
             if not i.channel.permissions_for(i.guild.me).create_private_threads:
@@ -828,9 +830,28 @@ class MainView(View):
 
     @discord.ui.button(label="📊 Статистика", style=discord.ButtonStyle.secondary, row=1)
     async def stats(self, i: discord.Interaction, b: Button):
-        view = View()
-        view.add_item(StatsButton())
-        await i.response.send_message("📊 Нажмите для просмотра статистики:", view=view, ephemeral=True)
+        await i.response.defer(ephemeral=True)
+        try:
+            top_users = db_get_top_users(3)
+            top_text = ""
+            for idx, (uid, name, cnt) in enumerate(top_users, 1):
+                top_text += f"**{idx}.** {name} — {cnt} тикетов\n"
+            
+            embed = discord.Embed(
+                title="📊 Статистика бота",
+                description=(
+                    f"**📝 Всего создано:** {ticket_stats.get('created', 0)}\n"
+                    f"**✅ Закрыто:** {ticket_stats.get('closed', 0)}\n"
+                    f"**🟢 Активных:** {len(ticket_owners)}\n"
+                    f"**⏱ Время работы:** {str(datetime.now() - bot_start_time).split('.')[0]}\n\n"
+                    f"**🏆 Топ пользователей:**\n{top_text if top_text else 'Нет данных'}"
+                ),
+                color=discord.Color.blue()
+            )
+            await i.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "stats_button")
 
 # ========== ФОНОВАЯ ЗАДАЧА: АВТО-ЗАКРЫТИЕ ==========
 @tasks.loop(minutes=1)
@@ -959,11 +980,15 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
             await i.followup.send("❌ Нельзя выдать тайм-аут боту", ephemeral=True)
             return
 
+        if user == i.user:
+            await i.followup.send("❌ Нельзя выдать тайм-аут себе", ephemeral=True)
+            return
+
         if not (1 <= minutes <= 40320):
             await i.followup.send("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
             return
 
-        if i.channel not in user.threads:
+        if user not in i.channel.members:
             await i.followup.send(f"❌ {user.mention} не участник этой ветки", ephemeral=True)
             return
 
@@ -981,6 +1006,7 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
 
 @bot.tree.command(name="send_rules", description="Отправить правила")
 async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord.Member = None):
+    global RULES_THREAD_ID
     await i.response.defer(ephemeral=True)
     try:
         if not is_support(i.channel):
@@ -1007,7 +1033,7 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "send_rules_cmd")
 
-@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
+@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы и пустые ветки")
 async def cleanup_cmd(i: discord.Interaction):
     await i.response.defer(ephemeral=True)
     try:
@@ -1020,14 +1046,16 @@ async def cleanup_cmd(i: discord.Interaction):
             await i.followup.send("❌ Нет прав", ephemeral=True)
             return
 
-        active = set()
+        active_threads = set()
         for ch in i.guild.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
                 for t in ch.threads:
                     if "тикет" in t.name or t.name in ["📋-правила-поддержки", "📋-commands-security-admins"]:
-                        active.add(t.id)
+                        active_threads.add(t.id)
 
-        deleted = 0
+        deleted_vc = 0
+        deleted_threads = 0
+
         for ch in i.guild.channels:
             if isinstance(ch, discord.VoiceChannel) and "🔊" in ch.name and ch.category:
                 sc = False
@@ -1039,7 +1067,7 @@ async def cleanup_cmd(i: discord.Interaction):
                     continue
 
                 found = False
-                for tid in active:
+                for tid in active_threads:
                     if tid in voice_channels and voice_channels[tid] == ch.id:
                         found = True
                         break
@@ -1051,11 +1079,29 @@ async def cleanup_cmd(i: discord.Interaction):
                 if not found:
                     try:
                         await ch.delete()
-                        deleted += 1
+                        deleted_vc += 1
                     except:
                         pass
 
-        await i.followup.send(f"🗑️ Удалено {deleted} осиротевших голосовых каналов", ephemeral=True)
+        for ch in i.guild.channels:
+            if ch.id in SUPPORT_CHANNEL_IDS:
+                for t in ch.threads:
+                    if "тикет" in t.name and t.id not in active_threads:
+                        try:
+                            msg_count = 0
+                            async for _ in t.history(limit=1):
+                                msg_count += 1
+                                break
+                            if msg_count == 0:
+                                await t.delete()
+                                deleted_threads += 1
+                        except:
+                            pass
+
+        await i.followup.send(
+            f"🗑️ Удалено {deleted_vc} голосовых каналов и {deleted_threads} пустых веток",
+            ephemeral=True
+        )
     except Exception as e:
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "cleanup_cmd")
@@ -1079,7 +1125,7 @@ async def commands_cmd(i: discord.Interaction):
                 "/setup_tickets — создать меню тикетов\n"
                 "/timeout <пользователь> <минуты> — тайм-аут с выбором причины\n"
                 "/send_rules [номер] [пользователь] — отправить правила\n"
-                "/cleanup — удалить осиротевшие голосовые каналы\n"
+                "/cleanup — удалить осиротевшие голосовые каналы и пустые ветки\n"
                 "/commands — этот список\n"
                 "/stats — статистика бота\n"
                 "/ticket_info — информация о текущем тикете"
@@ -1120,7 +1166,6 @@ async def ticket_info(i: discord.Interaction):
             return
 
         author_id = ticket_owners.get(thread_id)
-        created_at = ticket_creation_time.get(thread_id, 0)
         c.execute("SELECT ticket_type, subcategory, reason, created_at FROM tickets WHERE thread_id = ?", (str(thread_id),))
         row = c.fetchone()
         
@@ -1187,6 +1232,7 @@ async def on_ready():
                             for vc in g.voice_channels:
                                 if t.name[:80] in vc.name:
                                     voice_channels[t.id] = vc.id
+                                    break
                             try:
                                 async for msg in t.history(limit=10):
                                     if msg.author == bot.user and msg.components:
@@ -1206,9 +1252,7 @@ async def on_message(message):
     content = message.content.lower()
 
     if message.channel.id in ticket_owners:
-        author_id = ticket_owners.get(message.channel.id)
-        if message.author.id == author_id:
-            db_update_activity(message.channel.id)
+        db_update_activity(message.channel.id)
 
     if message.channel.id == TARGET_CHANNEL_ID or message.author.id in TARGET_USER_IDS or any(w in content for w in TRIGGER_WORDS):
         try:
