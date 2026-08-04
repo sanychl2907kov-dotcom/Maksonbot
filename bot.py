@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 import threading
+import requests
 
 # ========== ЛОГИРОВАНИЕ ==========
 logging.basicConfig(filename='errors.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -86,6 +87,17 @@ def run_flask():
 
 threading.Thread(target=run_flask, daemon=True).start()
 print("✅ Flask-заглушка запущена")
+
+# ========== KEEP-ALIVE ПИНГ ==========
+@tasks.loop(minutes=5)
+async def keep_alive():
+    """Пингует Flask-заглушку каждые 5 минут, чтобы бот не засыпал"""
+    try:
+        url = f"http://127.0.0.1:{os.environ.get('PORT', 10000)}/ping"
+        requests.get(url, timeout=5)
+        print("🔄 Keep-alive пинг отправлен")
+    except Exception as e:
+        print(f"⚠️ Keep-alive ошибка: {e}")
 
 # ========== ЗАЩИТА ОТ СПАМА ==========
 ticket_create_timestamps = []
@@ -1000,8 +1012,6 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
             await i.followup.send("❌ Время от 1 до 40320 минут (28 дней)", ephemeral=True)
             return
 
-        # Проверка на участника убрана — Discord сам проверит доступ
-
         view = TimeoutView(user, minutes)
         embed = discord.Embed(
             title="⏰ Выберите причину тайм-аута",
@@ -1207,6 +1217,9 @@ async def ticket_info(i: discord.Interaction):
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_THREAD_ID
     print(f"✅ {bot.user} запущен")
+    
+    # Запускаем keep-alive пинг
+    keep_alive.start()
     
     check_inactive_tickets.start()
     
