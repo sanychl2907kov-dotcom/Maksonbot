@@ -1,4 +1,4 @@
-discord.py
-python-dotenv
-flask
-pip install requests 
+discord.py==2.3.2
+python-dotenv==1.0.0
+Flask==2.3.3
+requests==2.31.0
