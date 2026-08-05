@@ -44,10 +44,20 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 app = Flask('')
 
 @app.route('/')
-def home(): return "Бот MAKSON работает 24/7!"
-@app.route('/ping') def ping(): return "pong", 200
-@app.route('/health') def health(): return "OK", 200
-@app.route('/keepalive') def keepalive(): return "alive", 200
+def home():
+    return "Бот MAKSON работает 24/7!"
+
+@app.route('/ping')
+def ping():
+    return "pong", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+@app.route('/keepalive')
+def keepalive():
+    return "alive", 200
 
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
