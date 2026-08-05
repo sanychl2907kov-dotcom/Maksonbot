@@ -77,15 +77,25 @@ def start_flask():
 
 threading.Timer(1.0, start_flask).start()
 
-# ========== БАЗА ДАННЫХ ==========
+# ========== БАЗА ДАННЫХ (С closed_at) ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
+
+# Создаём таблицу с closed_at
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT UNIQUE, user_id TEXT, user_name TEXT,
     ticket_type TEXT, subcategory TEXT, reason TEXT,
-    created_at TEXT, status TEXT, last_activity TEXT
+    created_at TEXT, closed_at TEXT, status TEXT, last_activity TEXT
 )''')
+
+# Если closed_at не было — добавляем
+try:
+    c.execute('''ALTER TABLE tickets ADD COLUMN closed_at TEXT''')
+    conn.commit()
+except sqlite3.OperationalError:
+    pass
+
 c.execute('''CREATE TABLE IF NOT EXISTS rules_threads (
     thread_id TEXT PRIMARY KEY, channel_id TEXT
 )''')
@@ -233,7 +243,6 @@ async def create_voice_channel(interaction, thread_name):
     except Exception as e:
         log_error(e, "voice_channel")
 
-# ===== ИСПРАВЛЕННАЯ close_ticket (УДАЛЯЕТ ПО ID + ПО ИМЕНИ) =====
 async def close_ticket(interaction, thread_id):
     if thread_id in ticket_closed:
         await interaction.followup.send("❌ Уже закрыт", ephemeral=True)
@@ -243,7 +252,7 @@ async def close_ticket(interaction, thread_id):
     db_close(thread_id)
     ticket_stats["closed"] += 1
     
-    # ===== СПОСОБ 1: УДАЛЕНИЕ ПО ID =====
+    # Удаление по ID
     vc_id = voice_channels.pop(thread_id, None)
     if vc_id:
         vc = interaction.guild.get_channel(vc_id)
@@ -251,7 +260,7 @@ async def close_ticket(interaction, thread_id):
             try: await vc.delete()
             except: pass
     
-    # ===== СПОСОБ 2: УДАЛЕНИЕ ПО ИМЕНИ (ЗАПАСНОЙ) =====
+    # Удаление по имени (запасной вариант)
     thread = interaction.channel
     if thread:
         for vc in interaction.guild.voice_channels:
@@ -269,7 +278,6 @@ async def close_ticket(interaction, thread_id):
     except: pass
     return True
 
-# ===== ИСПРАВЛЕННАЯ close_ticket_auto (УДАЛЯЕТ ПО ID + ПО ИМЕНИ) =====
 async def close_ticket_auto(thread, reason="Бездействие"):
     if thread.id in ticket_closed:
         return
@@ -278,7 +286,7 @@ async def close_ticket_auto(thread, reason="Бездействие"):
     db_close(thread.id)
     ticket_stats["closed"] += 1
     
-    # ===== УДАЛЕНИЕ ПО ID =====
+    # Удаление по ID
     vc_id = voice_channels.pop(thread.id, None)
     if vc_id:
         vc = thread.guild.get_channel(vc_id)
@@ -286,7 +294,7 @@ async def close_ticket_auto(thread, reason="Бездействие"):
             try: await vc.delete()
             except: pass
     
-    # ===== УДАЛЕНИЕ ПО ИМЕНИ =====
+    # Удаление по имени
     for vc in thread.guild.voice_channels:
         if thread.name[:80] in vc.name and "🔊" in vc.name:
             try:
@@ -760,7 +768,6 @@ async def check_inactive_tickets():
             if not row: continue
             last_activity = datetime.fromisoformat(row[0])
             if (now - last_activity).total_seconds() / 60 >= AUTO_CLOSE_MINUTES:
-                if thread_id in ticket_closed: continue
                 await close_ticket_auto(thread, f"Без ответа {AUTO_CLOSE_MINUTES} минут")
         except Exception as e:
             log_error(e, f"check_inactive: {thread_id}")
