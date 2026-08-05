@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify
 import threading
 
-# ========== ЛОГИРОВАНИЕ (МИНИМАЛЬНОЕ) ==========
+# ========== ЛОГИРОВАНИЕ ==========
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 def log_error(e, ctx=""): 
     print(f"❌ {ctx}: {e}")
@@ -40,7 +40,7 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========== FLASK (БЫСТРЫЙ ЗАПУСК) ==========
+# ========== FLASK ==========
 app = Flask('')
 
 @app.route('/')
@@ -59,13 +59,25 @@ def health():
 def keepalive():
     return "alive", 200
 
+@app.route('/status')
+def status():
+    try:
+        return jsonify({
+            "tickets_created": ticket_stats.get("created", 0),
+            "tickets_closed": ticket_stats.get("closed", 0),
+            "active_tickets": len(ticket_owners),
+            "uptime": str(datetime.now() - bot_start_time).split('.')[0] if 'bot_start_time' in globals() else "N/A"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def start_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 threading.Timer(1.0, start_flask).start()
 
-# ========== БАЗА ДАННЫХ (ОПТИМИЗИРОВАННАЯ) ==========
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
@@ -107,7 +119,11 @@ def db_set_rules_thread(channel_id, thread_id):
               (str(channel_id), str(thread_id)))
     conn.commit()
 
-# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ (БЫСТРЫЙ ДОСТУП) ==========
+def db_get_top_users(limit=3):
+    c.execute('''SELECT user_id, user_name, COUNT(*) as cnt FROM tickets GROUP BY user_id ORDER BY cnt DESC LIMIT ?''', (limit,))
+    return c.fetchall()
+
+# ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
 ticket_creation_time = {}
 fake_counter = {}
@@ -173,7 +189,7 @@ TIMEOUT_REASONS = [
     ("📌 Другое", "другое")
 ]
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (БЫСТРЫЕ) ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def is_support(channel):
     return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
 
@@ -217,25 +233,75 @@ async def create_voice_channel(interaction, thread_name):
     except Exception as e:
         log_error(e, "voice_channel")
 
+# ===== ИСПРАВЛЕННАЯ close_ticket (УДАЛЯЕТ ПО ID + ПО ИМЕНИ) =====
 async def close_ticket(interaction, thread_id):
     if thread_id in ticket_closed:
         await interaction.followup.send("❌ Уже закрыт", ephemeral=True)
         return False
+    
     ticket_closed.add(thread_id)
     db_close(thread_id)
     ticket_stats["closed"] += 1
+    
+    # ===== СПОСОБ 1: УДАЛЕНИЕ ПО ID =====
     vc_id = voice_channels.pop(thread_id, None)
     if vc_id:
         vc = interaction.guild.get_channel(vc_id)
         if vc:
             try: await vc.delete()
             except: pass
+    
+    # ===== СПОСОБ 2: УДАЛЕНИЕ ПО ИМЕНИ (ЗАПАСНОЙ) =====
+    thread = interaction.channel
+    if thread:
+        for vc in interaction.guild.voice_channels:
+            if thread.name[:80] in vc.name and "🔊" in vc.name:
+                try:
+                    await vc.delete()
+                    break
+                except: pass
+    
     ticket_owners.pop(thread_id, None)
     ticket_creation_time.pop(thread_id, None)
+    
     await interaction.followup.send("✅ Тикет закрыт", ephemeral=True)
     try: await interaction.channel.delete()
     except: pass
     return True
+
+# ===== ИСПРАВЛЕННАЯ close_ticket_auto (УДАЛЯЕТ ПО ID + ПО ИМЕНИ) =====
+async def close_ticket_auto(thread, reason="Бездействие"):
+    if thread.id in ticket_closed:
+        return
+    
+    ticket_closed.add(thread.id)
+    db_close(thread.id)
+    ticket_stats["closed"] += 1
+    
+    # ===== УДАЛЕНИЕ ПО ID =====
+    vc_id = voice_channels.pop(thread.id, None)
+    if vc_id:
+        vc = thread.guild.get_channel(vc_id)
+        if vc:
+            try: await vc.delete()
+            except: pass
+    
+    # ===== УДАЛЕНИЕ ПО ИМЕНИ =====
+    for vc in thread.guild.voice_channels:
+        if thread.name[:80] in vc.name and "🔊" in vc.name:
+            try:
+                await vc.delete()
+                break
+            except: pass
+    
+    ticket_owners.pop(thread.id, None)
+    ticket_creation_time.pop(thread.id, None)
+    
+    try:
+        await thread.send(f"⏰ Тикет автоматически закрыт: {reason}")
+        await asyncio.sleep(2)
+        await thread.delete()
+    except: pass
 
 async def create_rules_thread(interaction, update=False):
     global RULES_THREAD_ID
@@ -505,6 +571,31 @@ class MainView(View):
         ]
         await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView("предложение", discord.Color.gold(), labels), ephemeral=True)
 
+    @discord.ui.button(label="📊 Статистика", style=discord.ButtonStyle.secondary, row=1)
+    async def stats(self, i: discord.Interaction, b: Button):
+        await i.response.defer(ephemeral=True)
+        try:
+            top_users = db_get_top_users(3)
+            top_text = ""
+            for idx, (uid, name, cnt) in enumerate(top_users, 1):
+                top_text += f"**{idx}.** {name} — {cnt} тикетов\n"
+            
+            embed = discord.Embed(
+                title="📊 Статистика бота",
+                description=(
+                    f"**📝 Всего создано:** {ticket_stats.get('created', 0)}\n"
+                    f"**✅ Закрыто:** {ticket_stats.get('closed', 0)}\n"
+                    f"**🟢 Активных:** {len(ticket_owners)}\n"
+                    f"**⏱ Время работы:** {str(datetime.now() - bot_start_time).split('.')[0]}\n\n"
+                    f"**🏆 Топ пользователей:**\n{top_text if top_text else 'Нет данных'}"
+                ),
+                color=discord.Color.blue()
+            )
+            await i.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "stats_button")
+
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
@@ -529,6 +620,7 @@ async def setup_tickets(i: discord.Interaction):
                 "🔴 **• Жалоба** — сообщить о нарушении или проблеме.\n"
                 "🟢 **• Предложение** — поделиться идеей или улучшением.\n"
                 "📋 **• Правила** — ознакомиться с правилами сервера.\n"
+                "📊 **• Статистика** — просмотреть статистику бота.\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "🕒 **• Ответ в течение 30 минут.**\n"
                 "👮 **• Модераторы всегда на связи.**"
@@ -669,22 +761,7 @@ async def check_inactive_tickets():
             last_activity = datetime.fromisoformat(row[0])
             if (now - last_activity).total_seconds() / 60 >= AUTO_CLOSE_MINUTES:
                 if thread_id in ticket_closed: continue
-                ticket_closed.add(thread_id)
-                db_close(thread_id)
-                ticket_stats["closed"] += 1
-                vc_id = voice_channels.pop(thread_id, None)
-                if vc_id:
-                    vc = thread.guild.get_channel(vc_id)
-                    if vc:
-                        try: await vc.delete()
-                        except: pass
-                ticket_owners.pop(thread_id, None)
-                ticket_creation_time.pop(thread_id, None)
-                try:
-                    await thread.send(f"⏰ Тикет автоматически закрыт (без ответа {AUTO_CLOSE_MINUTES} минут)")
-                    await asyncio.sleep(2)
-                    await thread.delete()
-                except: pass
+                await close_ticket_auto(thread, f"Без ответа {AUTO_CLOSE_MINUTES} минут")
         except Exception as e:
             log_error(e, f"check_inactive: {thread_id}")
 
