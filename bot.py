@@ -25,9 +25,10 @@ if not TOKEN:
 # ========== КОНФИГ ==========
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
 SUPPORT_ROLE_IDS = [
-    1527380448576278760,
-    1478736598542581790,
-    1471505746800939102
+    1527380448576278760,   # Роль модератора 1
+    1478736598542581790,   # Роль модератора 2
+    1471505746800939102,   # Роль модератора 3 (новая)
+    # 1478736709179932783  # УДАЛЕНО — это ID пользователя, а не роли
 ]
 MODERATOR_ROLE_IDS = [349491236891262988, 526068726748020739]
 AUTHORIZED_USER_ID = 1495071540927266841
@@ -136,7 +137,7 @@ def db_get_top_users(limit=3):
     c.execute('''SELECT user_id, user_name, COUNT(*) as cnt FROM tickets GROUP BY user_id ORDER BY cnt DESC LIMIT ?''', (limit,))
     return c.fetchall()
 
-# ===== ФУНКЦИИ ДЛЯ СИСТЕМЫ ДОСТУПА =====
+# ===== СИСТЕМА ДОСТУПА =====
 def db_is_access_banned(user_id):
     c.execute("SELECT banned_until FROM access_restrictions WHERE user_id=?", (str(user_id),))
     row = c.fetchone()
@@ -176,7 +177,7 @@ COMMANDS_RULES_THREAD_ID = None
 ticket_stats = {"created": 0, "closed": 0}
 bot_start_time = datetime.now()
 
-# ========== ПРАВИЛА ДЛЯ КОМАНД (для админов) ==========
+# ========== ПРАВИЛА ДЛЯ КОМАНД ==========
 COMMANDS_RULES_TEXT = (
     "**🔒 Правила для администрации (использование команд бота)**\n\n"
     "**1. Общие положения**\n"
