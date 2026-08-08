@@ -24,7 +24,11 @@ if not TOKEN:
 
 # ========== КОНФИГ ==========
 SUPPORT_CHANNEL_IDS = [1529799222293958787]
-SUPPORT_ROLE_IDS = [1527380448576278760, 1478736598542581790]
+SUPPORT_ROLE_IDS = [
+    1527380448576278760,
+    1478736598542581790,
+    1471505746800939102
+]
 MODERATOR_ROLE_IDS = [349491236891262988, 526068726748020739]
 AUTHORIZED_USER_ID = 1495071540927266841
 MAX_TICKETS_PER_USER = 2
@@ -94,6 +98,10 @@ except sqlite3.OperationalError:
 c.execute('''CREATE TABLE IF NOT EXISTS rules_threads (
     thread_id TEXT PRIMARY KEY, channel_id TEXT
 )''')
+c.execute('''CREATE TABLE IF NOT EXISTS access_restrictions (
+    user_id TEXT PRIMARY KEY,
+    banned_until TEXT
+)''')
 conn.commit()
 
 def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason=""):
@@ -127,6 +135,33 @@ def db_set_rules_thread(channel_id, thread_id):
 def db_get_top_users(limit=3):
     c.execute('''SELECT user_id, user_name, COUNT(*) as cnt FROM tickets GROUP BY user_id ORDER BY cnt DESC LIMIT ?''', (limit,))
     return c.fetchall()
+
+# ===== ФУНКЦИИ ДЛЯ СИСТЕМЫ ДОСТУПА =====
+def db_is_access_banned(user_id):
+    c.execute("SELECT banned_until FROM access_restrictions WHERE user_id=?", (str(user_id),))
+    row = c.fetchone()
+    if not row:
+        return False
+    if row[0] is None:
+        return True
+    return datetime.fromisoformat(row[0]) > datetime.now()
+
+def db_toggle_access(user_id, duration_minutes=None):
+    if duration_minutes is None:
+        c.execute("INSERT OR REPLACE INTO access_restrictions (user_id, banned_until) VALUES (?, NULL)", (str(user_id),))
+    else:
+        until = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat()
+        c.execute("INSERT OR REPLACE INTO access_restrictions (user_id, banned_until) VALUES (?, ?)", (str(user_id), until))
+    conn.commit()
+
+def db_remove_access_ban(user_id):
+    c.execute("DELETE FROM access_restrictions WHERE user_id=?", (str(user_id),))
+    conn.commit()
+
+def check_access(user_id):
+    if user_id == AUTHORIZED_USER_ID:
+        return True
+    return not db_is_access_banned(user_id)
 
 # ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
@@ -376,9 +411,7 @@ async def create_rules_thread(interaction, update=False):
         log_error(e, "create_rules_thread")
         return None
 
-# ===== ФУНКЦИЯ: СОЗДАНИЕ ВЕТКИ С ПРАВИЛАМИ КОМАНД =====
 async def create_commands_rules_thread(interaction):
-    """Создаёт приватную ветку с правилами для админов"""
     global COMMANDS_RULES_THREAD_ID
     try:
         for t in interaction.channel.threads:
@@ -393,19 +426,30 @@ async def create_commands_rules_thread(interaction):
         )
         COMMANDS_RULES_THREAD_ID = thread.id
         
+        added = 0
         for role_id in SUPPORT_ROLE_IDS:
             role = interaction.guild.get_role(role_id)
-            if role:
-                for member in role.members:
-                    try:
-                        await thread.add_user(member)
-                    except:
-                        pass
+            if not role:
+                print(f"⚠️ Роль {role_id} не найдена на сервере")
+                continue
+            for member in role.members:
+                try:
+                    await thread.add_user(member)
+                    added += 1
+                    await asyncio.sleep(0.1)
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        await asyncio.sleep(2)
+                    else:
+                        print(f"⚠️ Не удалось добавить {member}: {e}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка при добавлении {member}: {e}")
         
         owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
         if owner:
             try:
                 await thread.add_user(owner)
+                added += 1
             except:
                 pass
         
@@ -414,7 +458,7 @@ async def create_commands_rules_thread(interaction):
             description=COMMANDS_RULES_TEXT,
             color=discord.Color.gold()
         )
-        embed.set_footer(text="MAKSON • Только для модераторов")
+        embed.set_footer(text=f"MAKSON • Добавлено {added} участников")
         await thread.send(embed=embed)
         await thread.send("🔒 Эта ветка приватная. Видна только модераторам и владельцу.")
         
@@ -457,6 +501,9 @@ class CloseButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
+            if not check_access(i.user.id):
+                await i.followup.send("❌ Ваш доступ к командам ограничен.", ephemeral=True)
+                return
             if (RULES_THREAD_ID and i.channel.id == RULES_THREAD_ID) or (COMMANDS_RULES_THREAD_ID and i.channel.id == COMMANDS_RULES_THREAD_ID):
                 await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
@@ -502,6 +549,9 @@ class RulesButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
+            if not check_access(i.user.id):
+                await i.followup.send("❌ Ваш доступ к командам ограничен.", ephemeral=True)
+                return
             thread = await create_rules_thread(i)
             if thread:
                 await i.followup.send(f"✅ Правила созданы в ветке: {thread.mention}", ephemeral=True)
@@ -518,6 +568,9 @@ class CommandsRulesButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
+            if not check_access(i.user.id):
+                await i.followup.send("❌ Ваш доступ к командам ограничен.", ephemeral=True)
+                return
             is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
             if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
                 await i.followup.send("❌ У вас нет доступа к этому разделу.", ephemeral=True)
@@ -567,6 +620,9 @@ class PinButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
+            if not check_access(i.user.id):
+                await i.followup.send("❌ Ваш доступ к командам ограничен.", ephemeral=True)
+                return
             if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
                 await i.followup.send("❌ Только для модераторов", ephemeral=True)
                 return
@@ -617,8 +673,11 @@ class SubButton(Button):
                     r = i.guild.get_role(rid)
                     if r:
                         for m in r.members:
-                            try: await t.add_user(m)
-                            except: pass
+                            try:
+                                await t.add_user(m)
+                                await asyncio.sleep(0.05)
+                            except:
+                                pass
                 if (o := i.guild.get_member(AUTHORIZED_USER_ID)):
                     try: await t.add_user(o)
                     except: pass
@@ -674,14 +733,15 @@ class MainView(View):
         
         is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in user.roles)
         if is_moderator or user.id == AUTHORIZED_USER_ID:
-            self.add_item(CommandsRulesButton())
+            if check_access(user.id):
+                self.add_item(CommandsRulesButton())
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
     await i.response.defer(ephemeral=False)
     try:
-        if not is_support(i.channel) or i.user.id != AUTHORIZED_USER_ID:
+        if i.user.id != AUTHORIZED_USER_ID:
             await i.followup.send("❌ Нет доступа")
             return
         lid = last_menu_message_id.get(i.channel.id)
@@ -715,10 +775,47 @@ async def setup_tickets(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}")
         log_error(e, "setup_tickets")
 
+@bot.tree.command(name="toggle_access", description="Забрать или вернуть доступ к командам (только владелец)")
+@app_commands.describe(user="Пользователь", duration="Время в минутах (если нужно временно)")
+async def toggle_access_cmd(i: discord.Interaction, user: discord.Member, duration: int = None):
+    await i.response.defer(ephemeral=True)
+    try:
+        if i.user.id != AUTHORIZED_USER_ID:
+            await i.followup.send("❌ Только владелец бота может использовать эту команду.", ephemeral=True)
+            return
+        
+        if user.id == AUTHORIZED_USER_ID:
+            await i.followup.send("❌ Нельзя ограничить доступ владельцу.", ephemeral=True)
+            return
+        
+        if user.id == i.user.id:
+            await i.followup.send("❌ Нельзя ограничить доступ себе.", ephemeral=True)
+            return
+        
+        is_banned = db_is_access_banned(user.id)
+        
+        if is_banned:
+            db_remove_access_ban(user.id)
+            await i.followup.send(f"✅ Доступ к командам **возвращён** для {user.mention}.", ephemeral=True)
+        else:
+            if duration:
+                db_toggle_access(user.id, duration)
+                await i.followup.send(f"⛔ Доступ к командам **забран** для {user.mention} на {duration} минут.", ephemeral=True)
+            else:
+                db_toggle_access(user.id, None)
+                await i.followup.send(f"⛔ Доступ к командам **забран навсегда** для {user.mention}.", ephemeral=True)
+        
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "toggle_access_cmd")
+
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки")
 async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int):
     await i.response.defer(ephemeral=True)
     try:
+        if not check_access(i.user.id):
+            await i.followup.send("❌ Ваш доступ к командам ограничен. Обратитесь к владельцу.", ephemeral=True)
+            return
         if not is_support(i.channel) or not isinstance(i.channel, discord.Thread):
             await i.followup.send("❌ Только в ветке поддержки", ephemeral=True); return
         if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
@@ -743,6 +840,9 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
     global RULES_THREAD_ID
     await i.response.defer(ephemeral=True)
     try:
+        if not check_access(i.user.id):
+            await i.followup.send("❌ Ваш доступ к командам ограничен. Обратитесь к владельцу.", ephemeral=True)
+            return
         if not is_support(i.channel) or not isinstance(i.channel, discord.Thread):
             await i.followup.send("❌ Только в ветке поддержки", ephemeral=True); return
         if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
@@ -761,6 +861,9 @@ async def send_rules_cmd(i: discord.Interaction, rule: str = None, user: discord
 async def cleanup_cmd(i: discord.Interaction):
     await i.response.defer(ephemeral=True)
     try:
+        if not check_access(i.user.id):
+            await i.followup.send("❌ Ваш доступ к командам ограничен. Обратитесь к владельцу.", ephemeral=True)
+            return
         if not is_support(i.channel):
             await i.followup.send("❌ Только в канале поддержки", ephemeral=True); return
         if not any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
@@ -780,12 +883,16 @@ async def cleanup_cmd(i: discord.Interaction):
 async def commands_cmd(i: discord.Interaction):
     await i.response.defer(ephemeral=True)
     try:
+        if not check_access(i.user.id):
+            await i.followup.send("❌ Ваш доступ к командам ограничен. Обратитесь к владельцу.", ephemeral=True)
+            return
         if not is_support(i.channel):
             await i.followup.send("❌ Только в канале поддержки", ephemeral=True); return
         embed = discord.Embed(
             title="📋 Команды бота",
             description=(
                 "/setup_tickets — создать меню тикетов.\n"
+                "/toggle_access <пользователь> [время] — управление доступом (только владелец).\n"
                 "/timeout <пользователь> <минуты> — тайм-аут.\n"
                 "/send_rules [номер] [пользователь] — отправить правила.\n"
                 "/cleanup — удалить осиротевшие голосовые каналы.\n"
@@ -856,33 +963,38 @@ async def on_ready():
         print(f"✅ Синхронизировано {len(synced)} команд")
     except Exception as e:
         log_error(e, "sync")
+    
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
                 for t in ch.threads:
-                    if t.name == "📋-правила-поддержки":
-                        RULES_THREAD_ID = t.id
-                        db_set_rules_thread(ch.id, t.id)
-                    elif t.name == "📋-правила-команд":
-                        COMMANDS_RULES_THREAD_ID = t.id
-                    elif "тикет" in t.name:
-                        c.execute('SELECT user_id FROM tickets WHERE thread_id=? AND status="open"', (str(t.id),))
-                        row = c.fetchone()
-                        if row:
-                            ticket_owners[t.id] = int(row[0])
-                            for vc in g.voice_channels:
-                                if t.name[:80] in vc.name:
-                                    voice_channels[t.id] = vc.id
-                                    break
-                            try:
-                                async for msg in t.history(limit=10):
-                                    if msg.author == bot.user and msg.components:
-                                        view = View()
-                                        view.add_item(CloseButton())
-                                        view.add_item(PinButton())
-                                        await msg.edit(view=view)
+                    try:
+                        if t.name == "📋-правила-поддержки":
+                            RULES_THREAD_ID = t.id
+                            db_set_rules_thread(ch.id, t.id)
+                        elif t.name == "📋-правила-команд":
+                            COMMANDS_RULES_THREAD_ID = t.id
+                        elif "тикет" in t.name:
+                            c.execute('SELECT user_id FROM tickets WHERE thread_id=? AND status="open"', (str(t.id),))
+                            row = c.fetchone()
+                            if row:
+                                ticket_owners[t.id] = int(row[0])
+                                for vc in g.voice_channels:
+                                    if t.name[:80] in vc.name:
+                                        voice_channels[t.id] = vc.id
                                         break
-                            except: pass
+                                try:
+                                    async for msg in t.history(limit=10):
+                                        if msg.author == bot.user and msg.components:
+                                            view = View()
+                                            view.add_item(CloseButton())
+                                            view.add_item(PinButton())
+                                            await msg.edit(view=view)
+                                            break
+                                except:
+                                    pass
+                    except Exception as e:
+                        log_error(e, f"on_ready: обработка треда {t.id}")
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
