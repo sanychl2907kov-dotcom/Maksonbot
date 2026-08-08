@@ -77,25 +77,20 @@ def start_flask():
 
 threading.Timer(1.0, start_flask).start()
 
-# ========== БАЗА ДАННЫХ (С closed_at) ==========
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
-
-# Создаём таблицу с closed_at
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT UNIQUE, user_id TEXT, user_name TEXT,
     ticket_type TEXT, subcategory TEXT, reason TEXT,
     created_at TEXT, closed_at TEXT, status TEXT, last_activity TEXT
 )''')
-
-# Если closed_at не было — добавляем
 try:
     c.execute('''ALTER TABLE tickets ADD COLUMN closed_at TEXT''')
     conn.commit()
 except sqlite3.OperationalError:
     pass
-
 c.execute('''CREATE TABLE IF NOT EXISTS rules_threads (
     thread_id TEXT PRIMARY KEY, channel_id TEXT
 )''')
@@ -142,9 +137,32 @@ ticket_closed = set()
 voice_channels = {}
 last_menu_message_id = {}
 RULES_THREAD_ID = None
-COMMANDS_THREAD_ID = None
+COMMANDS_RULES_THREAD_ID = None
 ticket_stats = {"created": 0, "closed": 0}
 bot_start_time = datetime.now()
+
+# ========== ПРАВИЛА ДЛЯ КОМАНД (для админов) ==========
+COMMANDS_RULES_TEXT = (
+    "**🔒 Правила для администрации (использование команд бота)**\n\n"
+    "**1. Общие положения**\n"
+    "• Команды бота предназначены **только для модераторов и администраторов** сервера.\n"
+    "• Использование команд **без веской причины** запрещено.\n"
+    "• Все действия командами **логируются**.\n\n"
+    "**2. Команда `/timeout`**\n"
+    "• Выдавать тайм-аут **только за реальные нарушения**.\n"
+    "• Максимальное время — **30 минут** для первого нарушения.\n"
+    "• Запрещено выдавать тайм-аут **другим админам**.\n"
+    "• **Обязательно указывать причину**.\n\n"
+    "**3. Команда `/cleanup`**\n"
+    "• Использовать только при реальной необходимости.\n"
+    "• Не чаще 1 раза в 10 минут.\n\n"
+    "**4. Команда `/send_rules`**\n"
+    "• Отправлять правила только по запросу пользователя.\n\n"
+    "**5. Команда `/setup_tickets`**\n"
+    "• Доступна **только владельцу бота**.\n\n"
+    "**6. Ответственность**\n"
+    "• Нарушение правил → предупреждение → лишение прав на команды."
+)
 
 RULES_DICT = {
     "1": (
@@ -252,7 +270,6 @@ async def close_ticket(interaction, thread_id):
     db_close(thread_id)
     ticket_stats["closed"] += 1
     
-    # Удаление по ID
     vc_id = voice_channels.pop(thread_id, None)
     if vc_id:
         vc = interaction.guild.get_channel(vc_id)
@@ -260,7 +277,6 @@ async def close_ticket(interaction, thread_id):
             try: await vc.delete()
             except: pass
     
-    # Удаление по имени (запасной вариант)
     thread = interaction.channel
     if thread:
         for vc in interaction.guild.voice_channels:
@@ -286,7 +302,6 @@ async def close_ticket_auto(thread, reason="Бездействие"):
     db_close(thread.id)
     ticket_stats["closed"] += 1
     
-    # Удаление по ID
     vc_id = voice_channels.pop(thread.id, None)
     if vc_id:
         vc = thread.guild.get_channel(vc_id)
@@ -294,7 +309,6 @@ async def close_ticket_auto(thread, reason="Бездействие"):
             try: await vc.delete()
             except: pass
     
-    # Удаление по имени
     for vc in thread.guild.voice_channels:
         if thread.name[:80] in vc.name and "🔊" in vc.name:
             try:
@@ -362,6 +376,58 @@ async def create_rules_thread(interaction, update=False):
         log_error(e, "create_rules_thread")
         return None
 
+# ===== НОВАЯ ФУНКЦИЯ: СОЗДАНИЕ ВЕТКИ С ПРАВИЛАМИ КОМАНД =====
+async def create_commands_rules_thread(interaction):
+    """Создаёт приватную ветку с правилами для админов"""
+    global COMMANDS_RULES_THREAD_ID
+    try:
+        # Проверяем, есть ли уже такая ветка
+        for t in interaction.channel.threads:
+            if t.name == "📋-правила-команд":
+                COMMANDS_RULES_THREAD_ID = t.id
+                return t
+        
+        # Создаём новую ветку (приватную)
+        thread = await interaction.channel.create_thread(
+            name="📋-правила-команд",
+            auto_archive_duration=10080,
+            type=discord.ChannelType.private_thread
+        )
+        COMMANDS_RULES_THREAD_ID = thread.id
+        
+        # Добавляем всех модераторов
+        for role_id in SUPPORT_ROLE_IDS:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                for member in role.members:
+                    try:
+                        await thread.add_user(member)
+                    except:
+                        pass
+        
+        # Добавляем владельца
+        owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
+        if owner:
+            try:
+                await thread.add_user(owner)
+            except:
+                pass
+        
+        # Отправляем правила
+        embed = discord.Embed(
+            title="📋 Правила команд для администрации",
+            description=COMMANDS_RULES_TEXT,
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="MAKSON • Только для модераторов")
+        await thread.send(embed=embed)
+        await thread.send("🔒 Эта ветка приватная. Видна только модераторам и владельцу.")
+        
+        return thread
+    except Exception as e:
+        log_error(e, "create_commands_rules_thread")
+        return None
+
 async def send_rules(thread, rules=None, mention=None):
     if rules:
         found = []
@@ -396,7 +462,7 @@ class CloseButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
-            if (RULES_THREAD_ID and i.channel.id == RULES_THREAD_ID) or (COMMANDS_THREAD_ID and i.channel.id == COMMANDS_THREAD_ID):
+            if (RULES_THREAD_ID and i.channel.id == RULES_THREAD_ID) or (COMMANDS_RULES_THREAD_ID and i.channel.id == COMMANDS_RULES_THREAD_ID):
                 await i.followup.send("❌ Эту ветку нельзя закрыть", ephemeral=True)
                 return
             if i.channel.id in ticket_closed:
@@ -449,6 +515,29 @@ class RulesButton(Button):
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "RulesButton")
+
+# ===== НОВАЯ КНОПКА: ПРАВИЛА КОМАНД (ТОЛЬКО ДЛЯ МОДЕРАТОРОВ) =====
+class CommandsRulesButton(Button):
+    def __init__(self):
+        super().__init__(label="📋 Правила команд", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            # Проверка прав: только модераторы и владелец
+            is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
+            if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
+                await i.followup.send("❌ У вас нет доступа к этому разделу.", ephemeral=True)
+                return
+            
+            thread = await create_commands_rules_thread(i)
+            if thread:
+                await i.followup.send(f"✅ Ветка с правилами команд создана: {thread.mention}", ephemeral=True)
+            else:
+                await i.followup.send("❌ Не удалось создать ветку с правилами команд", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "CommandsRulesButton")
 
 class PinButton(Button):
     def __init__(self):
@@ -553,8 +642,18 @@ class SubcategoryView(View):
             self.add_item(SubButton(label, sub, typ, color))
 
 class MainView(View):
-    def __init__(self):
+    def __init__(self, user):
         super().__init__(timeout=None)
+        self.user = user
+        
+        self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="complaint"))
+        self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="suggestion"))
+        self.add_item(RulesButton())
+        
+        # ===== ДОБАВЛЯЕМ КНОПКУ "ПРАВИЛА КОМАНД" ТОЛЬКО ДЛЯ МОДЕРАТОРОВ =====
+        is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in user.roles)
+        if is_moderator or user.id == AUTHORIZED_USER_ID:
+            self.add_item(CommandsRulesButton())
 
     @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
     async def complaint(self, i: discord.Interaction, b: Button):
@@ -618,8 +717,8 @@ async def setup_tickets(i: discord.Interaction):
                 old = await i.channel.fetch_message(lid)
                 await old.delete()
             except: pass
-        view = MainView()
-        view.add_item(RulesButton())
+        
+        view = MainView(i.user)
         embed = discord.Embed(
             title="🎫 **Техническая поддержка**",
             description=(
@@ -643,6 +742,7 @@ async def setup_tickets(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}")
         log_error(e, "setup_tickets")
 
+# ========== ОСТАЛЬНЫЕ КОМАНДЫ (timeout, send_rules, cleanup, commands) ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки")
 async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int):
     await i.response.defer(ephemeral=True)
@@ -775,7 +875,7 @@ async def check_inactive_tickets():
 # ========== СОБЫТИЯ ==========
 @bot.event
 async def on_ready():
-    global RULES_THREAD_ID, COMMANDS_THREAD_ID
+    global RULES_THREAD_ID, COMMANDS_RULES_THREAD_ID
     print(f"✅ {bot.user} запущен")
     check_inactive_tickets.start()
     await bot.wait_until_ready()
@@ -791,8 +891,8 @@ async def on_ready():
                     if t.name == "📋-правила-поддержки":
                         RULES_THREAD_ID = t.id
                         db_set_rules_thread(ch.id, t.id)
-                    elif t.name == "📋-commands-security-admins":
-                        COMMANDS_THREAD_ID = t.id
+                    elif t.name == "📋-правила-команд":
+                        COMMANDS_RULES_THREAD_ID = t.id
                     elif "тикет" in t.name:
                         c.execute('SELECT user_id FROM tickets WHERE thread_id=? AND status="open"', (str(t.id),))
                         row = c.fetchone()
@@ -811,6 +911,40 @@ async def on_ready():
                                         await msg.edit(view=view)
                                         break
                             except: pass
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = interaction.data.get("custom_id")
+        if custom_id == "complaint":
+            view = SubcategoryView("жалоба", discord.Color.red(), [
+                ("😡 Оскорбление/грубость", "оскорбление"),
+                ("📢 Флуд/спам", "флуд"),
+                ("🎙️ Голосовой канал", "голосовой-канал"),
+                ("👮 Жалоба на админа", "жалоба-на-админа"),
+                ("❓ Другое", "другое")
+            ])
+            embed = discord.Embed(
+                title="🚨 **Выберите причину жалобы**",
+                description="Нажмите на кнопку с подходящей причиной:",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+        if custom_id == "suggestion":
+            view = SubcategoryView("предложение", discord.Color.gold(), [
+                ("💡 Идея", "идея"),
+                ("🔧 Функционал", "функционал"),
+                ("🎨 Дизайн", "дизайн"),
+                ("❓ Другое", "другое")
+            ])
+            embed = discord.Embed(
+                title="💡 **Выберите тип предложения**",
+                description="Нажмите на кнопку с подходящей категорией:",
+                color=discord.Color.gold()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
 
 @bot.event
 async def on_message(message):
