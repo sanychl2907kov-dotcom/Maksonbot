@@ -376,18 +376,16 @@ async def create_rules_thread(interaction, update=False):
         log_error(e, "create_rules_thread")
         return None
 
-# ===== НОВАЯ ФУНКЦИЯ: СОЗДАНИЕ ВЕТКИ С ПРАВИЛАМИ КОМАНД =====
+# ===== ФУНКЦИЯ: СОЗДАНИЕ ВЕТКИ С ПРАВИЛАМИ КОМАНД =====
 async def create_commands_rules_thread(interaction):
     """Создаёт приватную ветку с правилами для админов"""
     global COMMANDS_RULES_THREAD_ID
     try:
-        # Проверяем, есть ли уже такая ветка
         for t in interaction.channel.threads:
             if t.name == "📋-правила-команд":
                 COMMANDS_RULES_THREAD_ID = t.id
                 return t
         
-        # Создаём новую ветку (приватную)
         thread = await interaction.channel.create_thread(
             name="📋-правила-команд",
             auto_archive_duration=10080,
@@ -395,7 +393,6 @@ async def create_commands_rules_thread(interaction):
         )
         COMMANDS_RULES_THREAD_ID = thread.id
         
-        # Добавляем всех модераторов
         for role_id in SUPPORT_ROLE_IDS:
             role = interaction.guild.get_role(role_id)
             if role:
@@ -405,7 +402,6 @@ async def create_commands_rules_thread(interaction):
                     except:
                         pass
         
-        # Добавляем владельца
         owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
         if owner:
             try:
@@ -413,7 +409,6 @@ async def create_commands_rules_thread(interaction):
             except:
                 pass
         
-        # Отправляем правила
         embed = discord.Embed(
             title="📋 Правила команд для администрации",
             description=COMMANDS_RULES_TEXT,
@@ -516,7 +511,6 @@ class RulesButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "RulesButton")
 
-# ===== НОВАЯ КНОПКА: ПРАВИЛА КОМАНД (ТОЛЬКО ДЛЯ МОДЕРАТОРОВ) =====
 class CommandsRulesButton(Button):
     def __init__(self):
         super().__init__(label="📋 Правила команд", style=discord.ButtonStyle.secondary, row=1)
@@ -524,7 +518,6 @@ class CommandsRulesButton(Button):
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         try:
-            # Проверка прав: только модераторы и владелец
             is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in i.user.roles)
             if not is_moderator and i.user.id != AUTHORIZED_USER_ID:
                 await i.followup.send("❌ У вас нет доступа к этому разделу.", ephemeral=True)
@@ -538,6 +531,34 @@ class CommandsRulesButton(Button):
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "CommandsRulesButton")
+
+class StatsButton(Button):
+    def __init__(self):
+        super().__init__(label="📊 Статистика", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            top_users = db_get_top_users(3)
+            top_text = ""
+            for idx, (uid, name, cnt) in enumerate(top_users, 1):
+                top_text += f"**{idx}.** {name} — {cnt} тикетов\n"
+            
+            embed = discord.Embed(
+                title="📊 Статистика бота",
+                description=(
+                    f"**📝 Всего создано:** {ticket_stats.get('created', 0)}\n"
+                    f"**✅ Закрыто:** {ticket_stats.get('closed', 0)}\n"
+                    f"**🟢 Активных:** {len(ticket_owners)}\n"
+                    f"**⏱ Время работы:** {str(datetime.now() - bot_start_time).split('.')[0]}\n\n"
+                    f"**🏆 Топ пользователей:**\n{top_text if top_text else 'Нет данных'}"
+                ),
+                color=discord.Color.blue()
+            )
+            await i.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "StatsButton")
 
 class PinButton(Button):
     def __init__(self):
@@ -649,59 +670,11 @@ class MainView(View):
         self.add_item(Button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0, custom_id="complaint"))
         self.add_item(Button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0, custom_id="suggestion"))
         self.add_item(RulesButton())
+        self.add_item(StatsButton())
         
-        # ===== ДОБАВЛЯЕМ КНОПКУ "ПРАВИЛА КОМАНД" ТОЛЬКО ДЛЯ МОДЕРАТОРОВ =====
         is_moderator = any(r.id in SUPPORT_ROLE_IDS for r in user.roles)
         if is_moderator or user.id == AUTHORIZED_USER_ID:
             self.add_item(CommandsRulesButton())
-
-    @discord.ui.button(label="🔴 Жалоба", style=discord.ButtonStyle.danger, row=0)
-    async def complaint(self, i: discord.Interaction, b: Button):
-        await i.response.defer(ephemeral=True)
-        labels = [
-            ("😡 Оскорбление/грубость", "оскорбление"),
-            ("📢 Флуд/спам", "флуд"),
-            ("🎙️ Голосовой канал", "голосовой-канал"),
-            ("👮 Жалоба на админа", "жалоба-на-админа"),
-            ("❓ Другое", "другое")
-        ]
-        await i.followup.send("📋 **Выберите причину жалобы:**", view=SubcategoryView("жалоба", discord.Color.red(), labels), ephemeral=True)
-
-    @discord.ui.button(label="🟢 Предложение", style=discord.ButtonStyle.success, row=0)
-    async def suggestion(self, i: discord.Interaction, b: Button):
-        await i.response.defer(ephemeral=True)
-        labels = [
-            ("💡 Идея", "идея"),
-            ("🔧 Функционал", "функционал"),
-            ("🎨 Дизайн", "дизайн"),
-            ("❓ Другое", "другое")
-        ]
-        await i.followup.send("💡 **Выберите тип предложения:**", view=SubcategoryView("предложение", discord.Color.gold(), labels), ephemeral=True)
-
-    @discord.ui.button(label="📊 Статистика", style=discord.ButtonStyle.secondary, row=1)
-    async def stats(self, i: discord.Interaction, b: Button):
-        await i.response.defer(ephemeral=True)
-        try:
-            top_users = db_get_top_users(3)
-            top_text = ""
-            for idx, (uid, name, cnt) in enumerate(top_users, 1):
-                top_text += f"**{idx}.** {name} — {cnt} тикетов\n"
-            
-            embed = discord.Embed(
-                title="📊 Статистика бота",
-                description=(
-                    f"**📝 Всего создано:** {ticket_stats.get('created', 0)}\n"
-                    f"**✅ Закрыто:** {ticket_stats.get('closed', 0)}\n"
-                    f"**🟢 Активных:** {len(ticket_owners)}\n"
-                    f"**⏱ Время работы:** {str(datetime.now() - bot_start_time).split('.')[0]}\n\n"
-                    f"**🏆 Топ пользователей:**\n{top_text if top_text else 'Нет данных'}"
-                ),
-                color=discord.Color.blue()
-            )
-            await i.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-            log_error(e, "stats_button")
 
 # ========== СЛЕШ-КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
@@ -742,7 +715,6 @@ async def setup_tickets(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}")
         log_error(e, "setup_tickets")
 
-# ========== ОСТАЛЬНЫЕ КОМАНДЫ (timeout, send_rules, cleanup, commands) ==========
 @bot.tree.command(name="timeout", description="Выдать тайм-аут участнику ветки")
 async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int):
     await i.response.defer(ephemeral=True)
