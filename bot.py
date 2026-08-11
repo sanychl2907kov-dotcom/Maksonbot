@@ -177,13 +177,57 @@ COMMANDS_RULES_TEXT = (
 )
 
 RULES_DICT = {
-    "1": "**1. Правила поведения**\nОскорбления, токсичность → закрытие ветки.\nСпам/флуд → предупреждение, затем закрытие.",
-    "2": "**2. Контент**\nNSFW → тайм-аут 15 мин.\nВирусы/вредоносные ссылки → бан.",
-    "3": "**3. Голосовые каналы**\nШум → предупреждение, затем тайм-аут.",
-    "4": "**4. Тикеты**\nФальшивый тикет → предупреждение, 4 раза → тайм-аут.",
-    "5": "**5. Конфиденциальность**\nСкриншоты тикетов → тайм-аут 30 мин.",
-    "6": "**6. Сроки**\nОтвет в течение 30 мин.\n24 ч без ответа → авто-закрытие.",
-    "7": "**7. Закрытие**\nПосле закрытия ветка удаляется."
+    "1": (
+        "**1. Основные правила поведения**\n"
+        "1.1. Оскорбление по национальным, религиозным или иным признакам, а также провокации и токсичное поведение в сторону участников проекта — **закрытие ветки без предупреждения**.\n"
+        "1.2. Бессмысленный спам, флуд и повторяющиеся сообщения — **предупреждение**, при повторении — **закрытие ветки**.\n"
+        "1.3. Спам ролями, которые отвечают за работу в проекте — **закрытие ветки** и **тайм-аут 5 минут**.\n"
+        "1.4. Грубость и агрессия в адрес администрации — **закрытие ветки** и **прогрессивный тайм-аут на усмотрение администрации**."
+    ),
+    "2": (
+        "**2. Контент и публикации**\n"
+        "2.1. Шокирующий, развратный или NSFW-контент — **закрытие ветки** и **тайм-аут 15 минут**.\n"
+        "2.2. Публикация файлов, которые наносят вред (вирусы, вредоносные ссылки) — **закрытие ветки** и **бессрочный бан**.\n"
+        "2.3. Реклама чего-либо, не связанного с проектом — **предупреждение**, при повторении — **закрытие ветки**."
+    ),
+    "3": (
+        "**3. В голосовых каналах**\n"
+        "3.1. Запрещено использовать SoundPad, микрофон с шумом, громкие звуки, мешающие другим.\n"
+        "3.2. Не разрешено включать музыку/сторонние звуки через микрофон без согласия участников.\n"
+        "3.3. При повторном нарушении — **тайм-аут 5 минут**."
+    ),
+    "4": (
+        "**4. Тикеты бота**\n"
+        "4.1. Игнорирование вопросов модераторов и отказ от взаимодействия — **моментальное наказание по регламенту**.\n"
+        "4.2. Создание тикетов/заявок не по теме — **закрытие ветки** без предупреждения.\n"
+        "4.3. Создание и мгновенное закрытие тикета (фальшивый тикет) — **предупреждение**, при 4 таких нарушениях подряд — **тайм-аут 5 минут**.\n"
+        "4.4. После создания тикета администрация обязана поприветствовать пользователя и тегнуть его в течение 5 минут.\n"
+        "4.5. Общение в тикете должно быть конструктивным. Оскорбления модераторов — **закрытие ветки** и **тайм-аут**."
+    ),
+    "5": (
+        "**5. Конфиденциальность**\n"
+        "5.1. Ветки являются приватными — в них пишут только автор и модераторы.\n"
+        "5.2. Передача содержимого тикетов третьим лицам — **закрытие ветки** и **тайм-аут 30 минут**.\n"
+        "5.3. Публикация скриншотов тикетов вне сервера — **закрытие ветки** и **тайм-аут 30 минут**."
+    ),
+    "6": (
+        "**6. Сроки и ожидание**\n"
+        "6.1. Ответ на тикет даётся в течение 30 минут.\n"
+        "6.2. Если автор не отвечает в течение 24 часов — тикет **автоматически закрывается**.\n"
+        "6.3. Повторные запросы на продление времени не рассматриваются."
+    ),
+    "7": (
+        "**7. Закрытие тикета**\n"
+        "7.1. Тикет закрывается после решения проблемы или по инициативе автора.\n"
+        "7.2. После закрытия ветка удаляется — **восстановление невозможно**.\n"
+        "7.3. Автор может открыть новый тикет только по новой проблеме."
+    ),
+    "8": (
+        "**8. Ссылки и реклама**\n"
+        "8.1. Запрещена реклама сторонних проектов, серверов, каналов без согласия администрации.\n"
+        "8.2. Разрешены ссылки на полезные материалы (гайды, статьи) с разрешения модератора.\n"
+        "8.3. Спам ссылками — **закрытие ветки** и **тайм-аут**."
+    )
 }
 
 TIMEOUT_REASONS = [
@@ -194,44 +238,19 @@ TIMEOUT_REASONS = [
     ("📌 Другое", "другое")
 ]
 
-# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА С ПРОГРЕССОМ ==========
-def create_ticket_embed(user, ticket_type, subcategory, status="open", msg_count=0):
-    """Создаёт красивый эмбед с прогресс-баром"""
-    
-    # === НОВЫЙ РАСЧЁТ ПРОГРЕССА ===
-    if status == "closed":
-        progress = 100
-    elif msg_count == 0:
-        progress = 10
-    elif msg_count <= 5:
-        progress = 30
-    elif msg_count <= 10:
-        progress = 60
-    elif msg_count <= 20:
-        progress = 80
-    else:
-        progress = 90
-    
-    # Прогресс-бар (10 сегментов)
-    filled = int(progress / 10)
-    empty = 10 - filled
-    bar = "🟢" * filled + "⬜" * empty
-    
+# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА ==========
+def create_ticket_embed(user, ticket_type, subcategory, status="open"):
     # Цвет и статус
     if status == "open":
         color = discord.Color.green()
-        status_text = "ОТКРЫТ"
-        status_icon = "🟢"
+        status_text = "🟢 ОТКРЫТ"
     elif status == "in_progress":
         color = discord.Color.gold()
-        status_text = "В РАБОТЕ"
-        status_icon = "🟡"
+        status_text = "🟡 В РАБОТЕ"
     else:
         color = discord.Color.red()
-        status_text = "ЗАКРЫТ"
-        status_icon = "🔴"
+        status_text = "🔴 ЗАКРЫТ"
     
-    # Тип тикета
     type_icon = "💡" if ticket_type == "Предложение" else "📋"
     
     embed = discord.Embed(
@@ -239,16 +258,14 @@ def create_ticket_embed(user, ticket_type, subcategory, status="open", msg_count
         description=(
             f"**Автор:** {user.mention}\n"
             f"**Категория:** {subcategory}\n"
-            f"**Статус:** {status_icon} {status_text}\n"
+            f"**Статус:** {status_text}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Прогресс:** {bar}  {progress}%\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Создан:** <t:{int(time.time())}:R>\n"
-            f"**Сообщений:** {msg_count}"
+            f"**Создан:** <t:{int(time.time())}:R>"
         ),
         color=color
     )
-    embed.set_footer(text="MAKSON Support • Обновляется в реальном времени")
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text="MAKSON Support")
     return embed
 
 # ========== ОБЩИЕ ПРОВЕРКИ ==========
@@ -500,41 +517,6 @@ class CloseButton(Button):
             author_id = ticket_owners.get(i.channel.id)
             thread = i.channel
             
-            # === ОБНОВЛЯЕМ ЭМБЕД ПЕРЕД ЗАКРЫТИЕМ ===
-            try:
-                async for msg in thread.history(limit=5):
-                    if msg.author == bot.user and msg.embeds:
-                        old_desc = msg.embeds[0].description
-                        lines = old_desc.split("\n")
-                        user_id = None
-                        ticket_type = None
-                        subcategory = None
-                        for line in lines:
-                            if "Автор:" in line:
-                                try:
-                                    user_id = int(line.split("<@")[1].split(">")[0])
-                                except:
-                                    pass
-                            elif "Категория:" in line:
-                                subcategory = line.split("Категория:")[1].strip()
-                            elif "Тип" in msg.embeds[0].title:
-                                ticket_type = "Предложение" if "ПРЕДЛОЖЕНИЕ" in msg.embeds[0].title else "Жалоба"
-                        
-                        if user_id:
-                            user = i.guild.get_member(user_id) or i.user
-                            new_embed = create_ticket_embed(
-                                user, 
-                                ticket_type or "Тикет", 
-                                subcategory or "Не указана", 
-                                "closed", 
-                                0
-                            )
-                            await msg.edit(embed=new_embed)
-                            break
-            except:
-                pass
-            
-            # === ЗАКРЫВАЕМ ТИКЕТ ===
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
                 if ct and time.time() - ct < 10:
@@ -721,8 +703,7 @@ class SubButton(Button):
             db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub)
             ticket_stats["created"] += 1
             
-            # === СОЗДАЁМ КРАСИВЫЙ ЭМБЕД С ПРОГРЕССОМ ===
-            embed = create_ticket_embed(i.user, self.typ, self.sub, "open", 0)
+            embed = create_ticket_embed(i.user, self.typ, self.sub, "open")
             
             cv = View()
             cv.add_item(CloseButton())
@@ -974,6 +955,11 @@ async def check_inactive_tickets():
 async def on_ready():
     global RULES_THREAD_ID, COMMANDS_RULES_THREAD_ID
     print(f"✅ {bot.user} запущен")
+    
+    # ===== КАСТОМНЫЙ СТАТУС =====
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты"))
+    print("✅ Статус установлен: 'Смотрит тикеты'")
+    
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     try:
@@ -1049,65 +1035,8 @@ async def on_interaction(interaction: discord.Interaction):
 async def on_message(message):
     if message.author.bot:
         return
-    
     if message.channel.id in ticket_owners:
         db_update_activity(message.channel.id)
-        
-        # === ОБНОВЛЯЕМ ЭМБЕД ===
-        try:
-            msg_count = 0
-            async for _ in message.channel.history(limit=100):
-                if not _.author.bot:
-                    msg_count += 1
-            
-            async for msg in message.channel.history(limit=5):
-                if msg.author == bot.user and msg.embeds:
-                    old_embed = msg.embeds[0]
-                    if "Сообщений:" in old_embed.description:
-                        desc_lines = old_embed.description.split("\n")
-                        new_desc = []
-                        for line in desc_lines:
-                            if "Сообщений:" in line:
-                                line = f"**Сообщений:** {msg_count}"
-                            new_desc.append(line)
-                        
-                        status = "open"
-                        if "ЗАКРЫТ" in old_embed.description:
-                            status = "closed"
-                        elif "В РАБОТЕ" in old_embed.description:
-                            status = "in_progress"
-                        
-                        ticket_type = "Предложение" if "ПРЕДЛОЖЕНИЕ" in old_embed.title else "Жалоба"
-                        
-                        subcategory = "Не указана"
-                        for line in desc_lines:
-                            if "Категория:" in line:
-                                subcategory = line.split("Категория:")[1].strip()
-                                break
-                        
-                        user_id = None
-                        for line in desc_lines:
-                            if "Автор:" in line:
-                                try:
-                                    user_id = int(line.split("<@")[1].split(">")[0])
-                                except:
-                                    pass
-                                break
-                        
-                        if user_id:
-                            user = message.guild.get_member(user_id) or message.author
-                            new_embed = create_ticket_embed(
-                                user,
-                                ticket_type,
-                                subcategory,
-                                status,
-                                msg_count
-                            )
-                            await msg.edit(embed=new_embed)
-                            break
-        except Exception as e:
-            pass
-    
     await bot.process_commands(message)
 
 # ========== ЗАПУСК ==========
