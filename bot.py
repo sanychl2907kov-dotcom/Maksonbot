@@ -194,6 +194,48 @@ TIMEOUT_REASONS = [
     ("📌 Другое", "другое")
 ]
 
+# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА С ПРОГРЕССОМ ==========
+def create_ticket_embed(user, ticket_type, subcategory, status="open", progress=0, msg_count=0):
+    """Создаёт красивый эмбед с прогресс-баром"""
+    # Прогресс-бар (10 сегментов)
+    filled = int(progress / 10)
+    empty = 10 - filled
+    bar = "🟢" * filled + "⬜" * empty
+    
+    # Цвет и статус
+    if status == "open":
+        color = discord.Color.green()
+        status_text = "ОТКРЫТ"
+        status_icon = "🟢"
+    elif status == "in_progress":
+        color = discord.Color.gold()
+        status_text = "В РАБОТЕ"
+        status_icon = "🟡"
+    else:
+        color = discord.Color.red()
+        status_text = "ЗАКРЫТ"
+        status_icon = "🔴"
+    
+    # Тип тикета
+    type_icon = "💡" if ticket_type == "Предложение" else "📋"
+    
+    embed = discord.Embed(
+        title=f"{type_icon} {ticket_type.upper()}",
+        description=(
+            f"**Автор:** {user.mention}\n"
+            f"**Категория:** {subcategory}\n"
+            f"**Статус:** {status_icon} {status_text}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Прогресс:** {bar}  {progress}%\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Создан:** <t:{int(time.time())}:R>\n"
+            f"**Сообщений:** {msg_count}"
+        ),
+        color=color
+    )
+    embed.set_footer(text="MAKSON Support • Обновляется в реальном времени")
+    return embed
+
 # ========== ОБЩИЕ ПРОВЕРКИ ==========
 def is_support(channel):
     return channel.id in SUPPORT_CHANNEL_IDS or (isinstance(channel, discord.Thread) and channel.parent_id in SUPPORT_CHANNEL_IDS)
@@ -438,7 +480,44 @@ class CloseButton(Button):
             if i.channel.id in ticket_closed:
                 await i.followup.send("❌ Уже закрыт", ephemeral=True)
                 return
+            
             author_id = ticket_owners.get(i.channel.id)
+            thread = i.channel
+            
+            # === ОБНОВЛЯЕМ ЭМБЕД ПЕРЕД ЗАКРЫТИЕМ ===
+            try:
+                async for msg in thread.history(limit=5):
+                    if msg.author == bot.user and msg.embeds:
+                        # Получаем данные из старого эмбеда
+                        old_desc = msg.embeds[0].description
+                        lines = old_desc.split("\n")
+                        user_id = None
+                        ticket_type = None
+                        subcategory = None
+                        for line in lines:
+                            if "Автор:" in line:
+                                user_id = int(line.split("<@")[1].split(">")[0])
+                            elif "Категория:" in line:
+                                subcategory = line.split("Категория:")[1].strip()
+                            elif "Тип" in msg.embeds[0].title:
+                                ticket_type = "Предложение" if "ПРЕДЛОЖЕНИЕ" in msg.embeds[0].title else "Жалоба"
+                        
+                        if user_id:
+                            user = i.guild.get_member(user_id) or i.user
+                            new_embed = create_ticket_embed(
+                                user, 
+                                ticket_type or "Тикет", 
+                                subcategory or "Не указана", 
+                                "closed", 
+                                100,
+                                0
+                            )
+                            await msg.edit(embed=new_embed)
+                            break
+            except:
+                pass
+            
+            # === ЗАКРЫВАЕМ ТИКЕТ ===
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
                 if ct and time.time() - ct < 10:
@@ -457,6 +536,7 @@ class CloseButton(Button):
                         await i.followup.send(f"⚠️ Быстрое закрытие {fake_counter[uid]}/{MAX_FAKE_TICKETS}", ephemeral=True)
                 await close_ticket(i, i.channel.id)
                 return
+            
             if not is_moderator(i.user):
                 await i.followup.send("❌ Нет прав", ephemeral=True)
                 return
@@ -464,6 +544,7 @@ class CloseButton(Button):
                 await i.followup.send("❌ Тикет не найден", ephemeral=True)
                 ticket_closed.add(i.channel.id)
                 return
+            
             await close_ticket(i, i.channel.id)
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
@@ -622,18 +703,10 @@ class SubButton(Button):
             ticket_creation_time[t.id] = time.time()
             db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub)
             ticket_stats["created"] += 1
-            embed = discord.Embed(
-                title="💡 НОВОЕ ПРЕДЛОЖЕНИЕ" if self.typ == "предложение" else "📋 НОВЫЙ ТИКЕТ",
-                description=(
-                    f"👤 **Автор:** {i.user.mention}\n"
-                    f"📌 **Тип:** {self.typ} → {self.sub}\n"
-                    f"🕒 **Создан:** <t:{int(time.time())}:R>\n"
-                    f"📊 **Статус:** 🟢 Открыт\n\n"
-                    f"✏️ **{'Опишите идею:' if self.typ == 'предложение' else 'Заполните форму:'}**\n"
-                    f"➡️ {'Ваша идея: _________' if self.typ == 'предложение' else 'Ник нарушителя: _________\n➡️ Время: _________\n➡️ Доказательства: _________'}"
-                ),
-                color=self.color
-            )
+            
+            # === СОЗДАЁМ КРАСИВЫЙ ЭМБЕД С ПРОГРЕССОМ ===
+            embed = create_ticket_embed(i.user, self.typ, self.sub, "open", 0, 0)
+            
             cv = View()
             cv.add_item(CloseButton())
             cv.add_item(PinButton())
@@ -959,8 +1032,74 @@ async def on_interaction(interaction: discord.Interaction):
 async def on_message(message):
     if message.author.bot:
         return
+    
     if message.channel.id in ticket_owners:
         db_update_activity(message.channel.id)
+        
+        # === ОБНОВЛЯЕМ ЭМБЕД С НОВЫМ КОЛИЧЕСТВОМ СООБЩЕНИЙ ===
+        try:
+            msg_count = 0
+            async for _ in message.channel.history(limit=100):
+                if not _.author.bot:
+                    msg_count += 1
+            
+            async for msg in message.channel.history(limit=5):
+                if msg.author == bot.user and msg.embeds:
+                    old_embed = msg.embeds[0]
+                    if "Сообщений:" in old_embed.description:
+                        # Парсим старый эмбед
+                        desc_lines = old_embed.description.split("\n")
+                        new_desc = []
+                        for line in desc_lines:
+                            if "Сообщений:" in line:
+                                line = f"**Сообщений:** {msg_count}"
+                            new_desc.append(line)
+                        
+                        # Определяем статус из старого эмбеда
+                        status = "open"
+                        if "ЗАКРЫТ" in old_embed.description:
+                            status = "closed"
+                        elif "В РАБОТЕ" in old_embed.description:
+                            status = "in_progress"
+                        
+                        # Определяем тип
+                        ticket_type = "Предложение" if "ПРЕДЛОЖЕНИЕ" in old_embed.title else "Жалоба"
+                        
+                        # Получаем категорию
+                        subcategory = "Не указана"
+                        for line in desc_lines:
+                            if "Категория:" in line:
+                                subcategory = line.split("Категория:")[1].strip()
+                                break
+                        
+                        # Получаем автора
+                        user_id = None
+                        for line in desc_lines:
+                            if "Автор:" in line:
+                                try:
+                                    user_id = int(line.split("<@")[1].split(">")[0])
+                                except:
+                                    pass
+                                break
+                        
+                        if user_id:
+                            user = message.guild.get_member(user_id) or message.author
+                            # Прогресс считаем от количества сообщений (макс 100)
+                            progress = min(msg_count * 10, 100)
+                            
+                            new_embed = create_ticket_embed(
+                                user,
+                                ticket_type,
+                                subcategory,
+                                status,
+                                progress,
+                                msg_count
+                            )
+                            await msg.edit(embed=new_embed)
+                            break
+        except Exception as e:
+            pass  # Не критично, если не обновилось
+    
     await bot.process_commands(message)
 
 # ========== ЗАПУСК ==========
