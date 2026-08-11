@@ -195,8 +195,23 @@ TIMEOUT_REASONS = [
 ]
 
 # ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА С ПРОГРЕССОМ ==========
-def create_ticket_embed(user, ticket_type, subcategory, status="open", progress=0, msg_count=0):
+def create_ticket_embed(user, ticket_type, subcategory, status="open", msg_count=0):
     """Создаёт красивый эмбед с прогресс-баром"""
+    
+    # === НОВЫЙ РАСЧЁТ ПРОГРЕССА ===
+    if status == "closed":
+        progress = 100
+    elif msg_count == 0:
+        progress = 10
+    elif msg_count <= 5:
+        progress = 30
+    elif msg_count <= 10:
+        progress = 60
+    elif msg_count <= 20:
+        progress = 80
+    else:
+        progress = 90
+    
     # Прогресс-бар (10 сегментов)
     filled = int(progress / 10)
     empty = 10 - filled
@@ -463,7 +478,8 @@ async def send_rules(thread, rules=None, mention=None):
         color=discord.Color.gold()
     ))
 
-# ========== КНОПКИ ==========
+# ========== КНОПКИ С ЦВЕТАМИ ==========
+
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=0)
@@ -488,7 +504,6 @@ class CloseButton(Button):
             try:
                 async for msg in thread.history(limit=5):
                     if msg.author == bot.user and msg.embeds:
-                        # Получаем данные из старого эмбеда
                         old_desc = msg.embeds[0].description
                         lines = old_desc.split("\n")
                         user_id = None
@@ -496,7 +511,10 @@ class CloseButton(Button):
                         subcategory = None
                         for line in lines:
                             if "Автор:" in line:
-                                user_id = int(line.split("<@")[1].split(">")[0])
+                                try:
+                                    user_id = int(line.split("<@")[1].split(">")[0])
+                                except:
+                                    pass
                             elif "Категория:" in line:
                                 subcategory = line.split("Категория:")[1].strip()
                             elif "Тип" in msg.embeds[0].title:
@@ -509,7 +527,6 @@ class CloseButton(Button):
                                 ticket_type or "Тикет", 
                                 subcategory or "Не указана", 
                                 "closed", 
-                                100,
                                 0
                             )
                             await msg.edit(embed=new_embed)
@@ -550,9 +567,36 @@ class CloseButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "CloseButton")
 
+class PinButton(Button):
+    def __init__(self):
+        super().__init__(label="📌 Закрепить", style=discord.ButtonStyle.primary, row=1)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            if not check_access(i.user.id):
+                await i.followup.send("❌ Доступ ограничен.", ephemeral=True)
+                return
+            if not is_moderator(i.user):
+                await i.followup.send("❌ Только для модераторов", ephemeral=True)
+                return
+            async for msg in i.channel.history(limit=20):
+                if not msg.author.bot:
+                    try:
+                        await msg.pin()
+                        await i.followup.send(f"📌 Закреплено сообщение от {msg.author.mention}", ephemeral=True)
+                        return
+                    except:
+                        await i.followup.send("❌ Не могу закрепить", ephemeral=True)
+                        return
+            await i.followup.send("❌ Не найдено сообщение", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            log_error(e, "PinButton")
+
 class RulesButton(Button):
     def __init__(self):
-        super().__init__(label="📋 Правила", style=discord.ButtonStyle.secondary, row=1)
+        super().__init__(label="📋 Правила", style=discord.ButtonStyle.success, row=1)
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -571,7 +615,7 @@ class RulesButton(Button):
 
 class CommandsRulesButton(Button):
     def __init__(self):
-        super().__init__(label="📋 Правила команд", style=discord.ButtonStyle.secondary, row=1)
+        super().__init__(label="📋 Правила команд", style=discord.ButtonStyle.blurple, row=1)
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -593,7 +637,7 @@ class CommandsRulesButton(Button):
 
 class StatsButton(Button):
     def __init__(self):
-        super().__init__(label="📊 Статистика", style=discord.ButtonStyle.secondary, row=1)
+        super().__init__(label="📊 Статистика", style=discord.ButtonStyle.blurple, row=1)
 
     async def callback(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
@@ -619,36 +663,9 @@ class StatsButton(Button):
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
             log_error(e, "StatsButton")
 
-class PinButton(Button):
-    def __init__(self):
-        super().__init__(label="📌 Закрепить", style=discord.ButtonStyle.secondary, row=1)
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        try:
-            if not check_access(i.user.id):
-                await i.followup.send("❌ Доступ ограничен.", ephemeral=True)
-                return
-            if not is_moderator(i.user):
-                await i.followup.send("❌ Только для модераторов", ephemeral=True)
-                return
-            async for msg in i.channel.history(limit=20):
-                if not msg.author.bot:
-                    try:
-                        await msg.pin()
-                        await i.followup.send(f"📌 Закреплено сообщение от {msg.author.mention}", ephemeral=True)
-                        return
-                    except:
-                        await i.followup.send("❌ Не могу закрепить", ephemeral=True)
-                        return
-            await i.followup.send("❌ Не найдено сообщение", ephemeral=True)
-        except Exception as e:
-            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-            log_error(e, "PinButton")
-
 class SubButton(Button):
     def __init__(self, label, sub, typ, color):
-        super().__init__(label=label, style=discord.ButtonStyle.danger if typ == "жалоба" else discord.ButtonStyle.blurple, row=0)
+        super().__init__(label=label, style=discord.ButtonStyle.danger if typ == "жалоба" else discord.ButtonStyle.success, row=0)
         self.sub = sub
         self.typ = typ
         self.color = color
@@ -705,7 +722,7 @@ class SubButton(Button):
             ticket_stats["created"] += 1
             
             # === СОЗДАЁМ КРАСИВЫЙ ЭМБЕД С ПРОГРЕССОМ ===
-            embed = create_ticket_embed(i.user, self.typ, self.sub, "open", 0, 0)
+            embed = create_ticket_embed(i.user, self.typ, self.sub, "open", 0)
             
             cv = View()
             cv.add_item(CloseButton())
@@ -1036,7 +1053,7 @@ async def on_message(message):
     if message.channel.id in ticket_owners:
         db_update_activity(message.channel.id)
         
-        # === ОБНОВЛЯЕМ ЭМБЕД С НОВЫМ КОЛИЧЕСТВОМ СООБЩЕНИЙ ===
+        # === ОБНОВЛЯЕМ ЭМБЕД ===
         try:
             msg_count = 0
             async for _ in message.channel.history(limit=100):
@@ -1047,7 +1064,6 @@ async def on_message(message):
                 if msg.author == bot.user and msg.embeds:
                     old_embed = msg.embeds[0]
                     if "Сообщений:" in old_embed.description:
-                        # Парсим старый эмбед
                         desc_lines = old_embed.description.split("\n")
                         new_desc = []
                         for line in desc_lines:
@@ -1055,24 +1071,20 @@ async def on_message(message):
                                 line = f"**Сообщений:** {msg_count}"
                             new_desc.append(line)
                         
-                        # Определяем статус из старого эмбеда
                         status = "open"
                         if "ЗАКРЫТ" in old_embed.description:
                             status = "closed"
                         elif "В РАБОТЕ" in old_embed.description:
                             status = "in_progress"
                         
-                        # Определяем тип
                         ticket_type = "Предложение" if "ПРЕДЛОЖЕНИЕ" in old_embed.title else "Жалоба"
                         
-                        # Получаем категорию
                         subcategory = "Не указана"
                         for line in desc_lines:
                             if "Категория:" in line:
                                 subcategory = line.split("Категория:")[1].strip()
                                 break
                         
-                        # Получаем автора
                         user_id = None
                         for line in desc_lines:
                             if "Автор:" in line:
@@ -1084,21 +1096,17 @@ async def on_message(message):
                         
                         if user_id:
                             user = message.guild.get_member(user_id) or message.author
-                            # Прогресс считаем от количества сообщений (макс 100)
-                            progress = min(msg_count * 10, 100)
-                            
                             new_embed = create_ticket_embed(
                                 user,
                                 ticket_type,
                                 subcategory,
                                 status,
-                                progress,
                                 msg_count
                             )
                             await msg.edit(embed=new_embed)
                             break
         except Exception as e:
-            pass  # Не критично, если не обновилось
+            pass
     
     await bot.process_commands(message)
 
