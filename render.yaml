@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: maksonbot
+    name: Maksonbot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
