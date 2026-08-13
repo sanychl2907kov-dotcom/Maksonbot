@@ -7,6 +7,7 @@ import asyncio
 import os
 import sqlite3
 import logging
+import random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, jsonify
@@ -90,8 +91,13 @@ c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT UNIQUE, user_id TEXT, user_name TEXT,
     ticket_type TEXT, subcategory TEXT, reason TEXT,
+    assigned_mod_id TEXT,
     created_at TEXT, closed_at TEXT, status TEXT, last_activity TEXT
 )''')
+try:
+    c.execute('ALTER TABLE tickets ADD COLUMN assigned_mod_id TEXT')
+except sqlite3.OperationalError:
+    pass
 try:
     c.execute('ALTER TABLE tickets ADD COLUMN closed_at TEXT')
 except sqlite3.OperationalError:
@@ -101,12 +107,17 @@ c.execute('''CREATE TABLE IF NOT EXISTS access_restrictions (user_id TEXT PRIMAR
 conn.commit()
 
 # ===== БД ФУНКЦИИ =====
-def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason=""):
+def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason="", assigned_mod_id=None):
     c.execute('''INSERT OR IGNORE INTO tickets 
-        (thread_id, user_id, user_name, ticket_type, subcategory, reason, created_at, status, last_activity)
-        VALUES (?,?,?,?,?,?,?,?,?)''',
+        (thread_id, user_id, user_name, ticket_type, subcategory, reason, assigned_mod_id, created_at, status, last_activity)
+        VALUES (?,?,?,?,?,?,?,?,?,?)''',
         (str(thread_id), str(user_id), user_name, ticket_type, subcategory, reason,
+         str(assigned_mod_id) if assigned_mod_id else None,
          datetime.now().isoformat(), 'open', datetime.now().isoformat()))
+    conn.commit()
+
+def db_update_assigned_mod(thread_id, mod_id):
+    c.execute("UPDATE tickets SET assigned_mod_id=? WHERE thread_id=?", (str(mod_id) if mod_id else None, str(thread_id)))
     conn.commit()
 
 def db_close(thread_id):
@@ -238,9 +249,47 @@ TIMEOUT_REASONS = [
     ("📌 Другое", "другое")
 ]
 
+# ========== КАТЕГОРИИ И АВТО-КАТЕГОРИЗАЦИЯ ==========
+CATEGORY_KEYWORDS = {
+    "🐛 Баг": ["баг", "глюк", "ошибка", "не работает", "вылетает", "лагает", "фриз"],
+    "🚨 Жалоба": ["жалоба", "нарушение", "оскорбление", "токсичный", "читер", "спам"],
+    "❓ Вопрос": ["как", "где", "почему", "что делать", "помогите", "не понимаю"],
+    "💡 Предложение": ["предложение", "идея", "улучшить", "добавить", "хотелось бы"],
+    "👤 Аккаунт": ["аккаунт", "логин", "пароль", "восстановить", "вход", "регистрация"],
+    "💰 Донат": ["донат", "пополнить", "права", "вип", "привилегия", "купить"]
+}
+
+def detect_category(text: str) -> str:
+    text_lower = text.lower()
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                return category
+    return "📌 Общее"
+
+# ========== ФУНКЦИЯ НАЗНАЧЕНИЯ МОДЕРАТОРА ==========
+async def assign_random_moderator(thread, guild):
+    moderators = []
+    for role_id in SUPPORT_ROLE_IDS:
+        role = guild.get_role(role_id)
+        if role:
+            for member in role.members:
+                if member not in moderators and not member.bot:
+                    moderators.append(member)
+    
+    if not moderators:
+        return None
+    
+    chosen = random.choice(moderators)
+    try:
+        await thread.add_user(chosen)
+    except:
+        pass
+    
+    return chosen
+
 # ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА ==========
-def create_ticket_embed(user, ticket_type, subcategory, status="open"):
-    # Цвет и статус
+def create_ticket_embed(user, ticket_type, subcategory, status="open", category="📌 Общее"):
     if status == "open":
         color = discord.Color.green()
         status_text = "🟢 ОТКРЫТ"
@@ -257,7 +306,8 @@ def create_ticket_embed(user, ticket_type, subcategory, status="open"):
         title=f"{type_icon} {ticket_type.upper()}",
         description=(
             f"**Автор:** {user.mention}\n"
-            f"**Категория:** {subcategory}\n"
+            f"**Категория:** {category}\n"
+            f"**Тема:** {subcategory}\n"
             f"**Статус:** {status_text}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"**Создан:** <t:{int(time.time())}:R>"
@@ -489,13 +539,20 @@ async def send_rules(thread, rules=None, mention=None):
             color=discord.Color.red()
         ))
         return
-    await thread.send(embed=discord.Embed(
-        title="📋 Правила сервера",
-        description="\n\n".join(RULES_DICT.values()),
-        color=discord.Color.gold()
-    ))
+    for num, text in RULES_DICT.items():
+        lines = text.split('\n')
+        title = lines[0].strip()
+        description = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+        embed = discord.Embed(
+            title=f"📌 {num}. {title}",
+            description=description,
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"MAKSON • Правило {num} из {len(RULES_DICT)}")
+        await thread.send(embed=embed)
+        await asyncio.sleep(0.5)
 
-# ========== КНОПКИ С ЦВЕТАМИ ==========
+# ========== КНОПКИ ==========
 
 class CloseButton(Button):
     def __init__(self):
@@ -515,7 +572,6 @@ class CloseButton(Button):
                 return
             
             author_id = ticket_owners.get(i.channel.id)
-            thread = i.channel
             
             if i.user.id == author_id:
                 ct = ticket_creation_time.get(i.channel.id)
@@ -679,6 +735,16 @@ class SubButton(Button):
             await t.edit(archived=False, locked=False)
             await create_voice_channel(i, name)
             await safe_add_user(t, i.user)
+            
+            # === НАЗНАЧАЕМ МОДЕРАТОРА ===
+            assigned_mod = await assign_random_moderator(t, i.guild)
+            assigned_mod_id = None
+            if assigned_mod:
+                assigned_mod_id = assigned_mod.id
+                await t.send(f"🔔 Назначенный модератор: {assigned_mod.mention}")
+            else:
+                await t.send("❌ Нет доступных модераторов")
+            
             mention = ""
             if self.typ == "жалоба":
                 for rid in SUPPORT_ROLE_IDS:
@@ -698,9 +764,10 @@ class SubButton(Button):
                 if owner:
                     await safe_add_user(t, owner)
                 mention = f"<@{AUTHORIZED_USER_ID}>"
+            
             ticket_owners[t.id] = uid
             ticket_creation_time[t.id] = time.time()
-            db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub)
+            db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub, assigned_mod_id)
             ticket_stats["created"] += 1
             
             embed = create_ticket_embed(i.user, self.typ, self.sub, "open")
@@ -956,7 +1023,6 @@ async def on_ready():
     global RULES_THREAD_ID, COMMANDS_RULES_THREAD_ID
     print(f"✅ {bot.user} запущен")
     
-    # ===== КАСТОМНЫЙ СТАТУС =====
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты"))
     print("✅ Статус установлен: 'Смотрит тикеты'")
     
@@ -978,7 +1044,7 @@ async def on_ready():
                         elif t.name == "📋-правила-команд":
                             COMMANDS_RULES_THREAD_ID = t.id
                         elif "тикет" in t.name:
-                            c.execute("SELECT user_id FROM tickets WHERE thread_id=? AND status='open'", (str(t.id),))
+                            c.execute("SELECT user_id, assigned_mod_id FROM tickets WHERE thread_id=? AND status='open'", (str(t.id),))
                             row = c.fetchone()
                             if row:
                                 ticket_owners[t.id] = int(row[0])
@@ -1037,6 +1103,34 @@ async def on_message(message):
         return
     if message.channel.id in ticket_owners:
         db_update_activity(message.channel.id)
+        
+        # === АВТО-КАТЕГОРИЗАЦИЯ ===
+        try:
+            async for msg in message.channel.history(limit=5):
+                if msg.author == bot.user and msg.embeds:
+                    old_embed = msg.embeds[0]
+                    if "Категория:" in old_embed.description:
+                        if "📌 Общее" in old_embed.description:
+                            first_msg = None
+                            async for m in message.channel.history(limit=10):
+                                if not m.author.bot:
+                                    first_msg = m
+                                    break
+                            
+                            if first_msg:
+                                category = detect_category(first_msg.content)
+                                new_embed = discord.Embed(
+                                    title=old_embed.title,
+                                    description=old_embed.description.replace("📌 Общее", category),
+                                    color=old_embed.color
+                                )
+                                new_embed.set_thumbnail(url=old_embed.thumbnail.url)
+                                new_embed.set_footer(text=old_embed.footer.text)
+                                await msg.edit(embed=new_embed)
+                    break
+        except Exception as e:
+            log_error(e, "auto_category")
+    
     await bot.process_commands(message)
 
 # ========== ЗАПУСК ==========
