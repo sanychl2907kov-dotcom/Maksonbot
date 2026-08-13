@@ -1003,10 +1003,15 @@ async def commands_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
 
-# ========== КОМАНДА /кто ==========
+# ========== КОМАНДА /кто (ТОЛЬКО В КАНАЛЕ 1478737906028908757) ==========
 @bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст", guild=discord.Object(id=580351461180047379))
 @app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
 async def who_cmd(i: discord.Interaction, text: str):
+    # === ПРОВЕРКА: РАЗРЕШЁННЫЙ КАНАЛ ===
+    if i.channel.id != 1478737906028908757:
+        await i.response.send_message("❌ Эта команда работает только в канале <#1478737906028908757>.", ephemeral=True)
+        return
+    
     await i.response.defer(ephemeral=False)
     try:
         members = []
@@ -1085,7 +1090,6 @@ async def on_ready():
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     try:
-        # ===== СИНХРОНИЗАЦИЯ ДЛЯ ТВОЕГО СЕРВЕРА (МГНОВЕННО) =====
         guild = discord.Object(id=580351461180047379)
         await bot.tree.sync(guild=guild)
         print(f"✅ Команды синхронизированы для сервера 580351461180047379")
