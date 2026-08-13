@@ -736,14 +736,15 @@ class SubButton(Button):
             await create_voice_channel(i, name)
             await safe_add_user(t, i.user)
             
-            # === НАЗНАЧАЕМ МОДЕРАТОРА ===
-            assigned_mod = await assign_random_moderator(t, i.guild)
+            # === НАЗНАЧАЕМ МОДЕРАТОРА ТОЛЬКО ДЛЯ ЖАЛОБ ===
             assigned_mod_id = None
-            if assigned_mod:
-                assigned_mod_id = assigned_mod.id
-                await t.send(f"🔔 Назначенный модератор: {assigned_mod.mention}")
-            else:
-                await t.send("❌ Нет доступных модераторов")
+            if self.typ == "жалоба":
+                assigned_mod = await assign_random_moderator(t, i.guild)
+                if assigned_mod:
+                    assigned_mod_id = assigned_mod.id
+                    await t.send(f"🔔 Назначенный модератор: {assigned_mod.mention}")
+                else:
+                    await t.send("❌ Нет доступных модераторов")
             
             mention = ""
             if self.typ == "жалоба":
