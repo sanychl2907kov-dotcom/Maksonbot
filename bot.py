@@ -594,7 +594,9 @@ class CloseButton(Button):
             
             if not is_moderator(i.user):
                 await i.followup.send("❌ Нет прав", ephemeral=True)
-                return            if not author_id:
+                return
+            
+            if not author_id:
                 await i.followup.send("❌ Тикет не найден", ephemeral=True)
                 ticket_closed.add(i.channel.id)
                 return
