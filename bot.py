@@ -1070,6 +1070,7 @@ async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get("custom_id")
         if custom_id == "complaint":
+            await interaction.response.defer(ephemeral=True)
             view = SubcategoryView("жалоба", discord.Color.red(), [
                 ("😡 Оскорбление/грубость", "оскорбление"),
                 ("📢 Флуд/спам", "флуд"),
@@ -1077,20 +1078,21 @@ async def on_interaction(interaction: discord.Interaction):
                 ("👮 Жалоба на админа", "жалоба-на-админа"),
                 ("❓ Другое", "другое")
             ])
-            await interaction.response.send_message(embed=discord.Embed(
+            await interaction.followup.send(embed=discord.Embed(
                 title="🚨 Выберите причину жалобы",
                 description="Нажмите на кнопку с подходящей причиной:",
                 color=discord.Color.red()
             ), view=view, ephemeral=True)
             return
         if custom_id == "suggestion":
+            await interaction.response.defer(ephemeral=True)
             view = SubcategoryView("предложение", discord.Color.gold(), [
                 ("💡 Идея", "идея"),
                 ("🔧 Функционал", "функционал"),
                 ("🎨 Дизайн", "дизайн"),
                 ("❓ Другое", "другое")
             ])
-            await interaction.response.send_message(embed=discord.Embed(
+            await interaction.followup.send(embed=discord.Embed(
                 title="💡 Выберите тип предложения",
                 description="Нажмите на кнопку с подходящей категорией:",
                 color=discord.Color.gold()
