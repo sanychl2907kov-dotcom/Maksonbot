@@ -40,8 +40,8 @@ FAKE_TICKET_TIMEOUT = 300
 MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
-GUILD_ID = 580351461180047379  # ТВОЙ СЕРВЕР
-ALLOWED_CHANNEL_ID = 1478737906028908757  # КАНАЛ ДЛЯ /кто
+GUILD_ID = 580351461180047379
+ALLOWED_CHANNEL_ID = 1478737906028908757
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1005,11 +1005,34 @@ async def commands_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
 
-# ========== КОМАНДА /кто (ГЛОБАЛЬНАЯ) ==========
-@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
+# ========== КОМАНДА /sync ==========
+@bot.tree.command(
+    name="sync",
+    description="Синхронизировать команды бота (только владелец)",
+    guild=discord.Object(id=GUILD_ID)
+)
+async def sync_cmd(i: discord.Interaction):
+    if i.user.id != AUTHORIZED_USER_ID:
+        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    await i.response.defer(ephemeral=True)
+    try:
+        # Синхронизация для сервера
+        guild = discord.Object(id=GUILD_ID)
+        await bot.tree.sync(guild=guild)
+        await i.followup.send("✅ Команды синхронизированы для этого сервера!", ephemeral=True)
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка синхронизации: {e}", ephemeral=True)
+
+# ========== КОМАНДА /кто (ТОЛЬКО ДЛЯ ТВОЕГО СЕРВЕРА) ==========
+@bot.tree.command(
+    name="кто",
+    description="Выбирает случайного участника сервера и подставляет текст",
+    guild=discord.Object(id=GUILD_ID)
+)
 @app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
 async def who_cmd(i: discord.Interaction, text: str):
-    # === ПРОВЕРКА: РАЗРЕШЁННЫЙ КАНАЛ ===
     if i.channel.id != ALLOWED_CHANNEL_ID:
         await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
         return
@@ -1092,19 +1115,9 @@ async def on_ready():
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     try:
-        # === ГЛОБАЛЬНАЯ СИНХРОНИЗАЦИЯ ===
-        await bot.tree.sync()
-        print(f"✅ Глобально синхронизировано")
-        
-        # === СИНХРОНИЗАЦИЯ ДЛЯ ТВОЕГО СЕРВЕРА ===
         guild = discord.Object(id=GUILD_ID)
         await bot.tree.sync(guild=guild)
         print(f"✅ Команды синхронизированы для сервера {GUILD_ID}")
-        
-        # === ПРИНУДИТЕЛЬНАЯ ПЕРЕЗАГРУЗКА КОМАНД ===
-        await bot.tree.sync()
-        print("✅ Принудительная синхронизация выполнена")
-        
     except Exception as e:
         log_error(e, "sync")
     
