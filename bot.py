@@ -40,6 +40,8 @@ FAKE_TICKET_TIMEOUT = 300
 MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
+GUILD_ID = 580351461180047379  # ТВОЙ СЕРВЕР
+ALLOWED_CHANNEL_ID = 1478737906028908757  # КАНАЛ ДЛЯ /кто
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1008,8 +1010,8 @@ async def commands_cmd(i: discord.Interaction):
 @app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
 async def who_cmd(i: discord.Interaction, text: str):
     # === ПРОВЕРКА: РАЗРЕШЁННЫЙ КАНАЛ ===
-    if i.channel.id != 1478737906028908757:
-        await i.response.send_message("❌ Эта команда работает только в канале <#1478737906028908757>.", ephemeral=True)
+    if i.channel.id != ALLOWED_CHANNEL_ID:
+        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
         return
     
     await i.response.defer(ephemeral=False)
@@ -1094,10 +1096,15 @@ async def on_ready():
         await bot.tree.sync()
         print(f"✅ Глобально синхронизировано")
         
-        # === СИНХРОНИЗАЦИЯ ДЛЯ ТВОЕГО СЕРВЕРА (ДЛЯ МГНОВЕННОГО ПОЯВЛЕНИЯ) ===
-        guild = discord.Object(id=580351461180047379)
+        # === СИНХРОНИЗАЦИЯ ДЛЯ ТВОЕГО СЕРВЕРА ===
+        guild = discord.Object(id=GUILD_ID)
         await bot.tree.sync(guild=guild)
-        print(f"✅ Команды синхронизированы для сервера 580351461180047379")
+        print(f"✅ Команды синхронизированы для сервера {GUILD_ID}")
+        
+        # === ПРИНУДИТЕЛЬНАЯ ПЕРЕЗАГРУЗКА КОМАНД ===
+        await bot.tree.sync()
+        print("✅ Принудительная синхронизация выполнена")
+        
     except Exception as e:
         log_error(e, "sync")
     
