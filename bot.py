@@ -1004,12 +1004,11 @@ async def commands_cmd(i: discord.Interaction):
         log_error(e, "commands_cmd")
 
 # ========== КОМАНДА /кто ==========
-@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
+@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст", guild=discord.Object(id=580351461180047379))
 @app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
 async def who_cmd(i: discord.Interaction, text: str):
     await i.response.defer(ephemeral=False)
     try:
-        # Собираем всех участников, которые онлайн и не боты
         members = []
         for member in i.guild.members:
             if not member.bot and member.status != discord.Status.offline and member.id != i.user.id:
@@ -1019,10 +1018,7 @@ async def who_cmd(i: discord.Interaction, text: str):
             await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
             return
         
-        # Выбираем случайного
         chosen = random.choice(members)
-        
-        # Отправляем результат
         await i.followup.send(f"**{chosen.mention}** — {text}")
         
     except Exception as e:
@@ -1089,10 +1085,16 @@ async def on_ready():
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     try:
+        # ===== СИНХРОНИЗАЦИЯ ДЛЯ ТВОЕГО СЕРВЕРА (МГНОВЕННО) =====
+        guild = discord.Object(id=580351461180047379)
+        await bot.tree.sync(guild=guild)
+        print(f"✅ Команды синхронизированы для сервера 580351461180047379")
+        
         synced = await bot.tree.sync()
-        print(f"✅ Синхронизировано {len(synced)} команд")
+        print(f"✅ Глобально синхронизировано {len(synced)} команд")
     except Exception as e:
         log_error(e, "sync")
+    
     for g in bot.guilds:
         for ch in g.channels:
             if ch.id in SUPPORT_CHANNEL_IDS:
