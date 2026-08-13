@@ -288,7 +288,7 @@ async def assign_random_moderator(thread, guild):
     
     return chosen
 
-# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА (БЕЗ ПРОГРЕССА И СЧЁТЧИКА) ==========
+# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА ==========
 def create_ticket_embed(user, ticket_type, subcategory, status="open", category="📌 Общее"):
     if status == "open":
         color = discord.Color.green()
@@ -1002,6 +1002,32 @@ async def commands_cmd(i: discord.Interaction):
     except Exception as e:
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
+
+# ========== КОМАНДА /кто ==========
+@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
+@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
+async def who_cmd(i: discord.Interaction, text: str):
+    await i.response.defer(ephemeral=False)
+    try:
+        # Собираем всех участников, которые онлайн и не боты
+        members = []
+        for member in i.guild.members:
+            if not member.bot and member.status != discord.Status.offline and member.id != i.user.id:
+                members.append(member)
+        
+        if not members:
+            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
+            return
+        
+        # Выбираем случайного
+        chosen = random.choice(members)
+        
+        # Отправляем результат
+        await i.followup.send(f"**{chosen.mention}** — {text}")
+        
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "who_cmd")
 
 # ========== ВЫБОР ПРИЧИНЫ ДЛЯ ТАЙМ-АУТА ==========
 class TimeoutReasonSelect(Select):
