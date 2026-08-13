@@ -1018,42 +1018,11 @@ async def sync_cmd(i: discord.Interaction):
     
     await i.response.defer(ephemeral=True)
     try:
-        # Синхронизация для сервера
         guild = discord.Object(id=GUILD_ID)
         await bot.tree.sync(guild=guild)
         await i.followup.send("✅ Команды синхронизированы для этого сервера!", ephemeral=True)
     except Exception as e:
         await i.followup.send(f"❌ Ошибка синхронизации: {e}", ephemeral=True)
-
-# ========== КОМАНДА /кто (ТОЛЬКО ДЛЯ ТВОЕГО СЕРВЕРА) ==========
-@bot.tree.command(
-    name="кто",
-    description="Выбирает случайного участника сервера и подставляет текст",
-    guild=discord.Object(id=GUILD_ID)
-)
-@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
-async def who_cmd(i: discord.Interaction, text: str):
-    if i.channel.id != ALLOWED_CHANNEL_ID:
-        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
-        return
-    
-    await i.response.defer(ephemeral=False)
-    try:
-        members = []
-        for member in i.guild.members:
-            if not member.bot and member.status != discord.Status.offline and member.id != i.user.id:
-                members.append(member)
-        
-        if not members:
-            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
-            return
-        
-        chosen = random.choice(members)
-        await i.followup.send(f"**{chosen.mention}** — {text}")
-        
-    except Exception as e:
-        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-        log_error(e, "who_cmd")
 
 # ========== ВЫБОР ПРИЧИНЫ ДЛЯ ТАЙМ-АУТА ==========
 class TimeoutReasonSelect(Select):
@@ -1116,8 +1085,44 @@ async def on_ready():
     await bot.wait_until_ready()
     try:
         guild = discord.Object(id=GUILD_ID)
+        
+        # === ПРИНУДИТЕЛЬНАЯ РЕГИСТРАЦИЯ КОМАНДЫ /кто ===
+        try:
+            bot.tree.remove_command("кто", guild=guild)
+        except:
+            pass
+        
+        @app_commands.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
+        @app_commands.describe(text="Текст, который будет подставлен после ника")
+        async def who_cmd(i: discord.Interaction, text: str):
+            if i.channel.id != ALLOWED_CHANNEL_ID:
+                await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
+                return
+            
+            await i.response.defer(ephemeral=False)
+            try:
+                members = []
+                for member in i.guild.members:
+                    if not member.bot and member.status != discord.Status.offline and member.id != i.user.id:
+                        members.append(member)
+                
+                if not members:
+                    await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
+                    return
+                
+                chosen = random.choice(members)
+                await i.followup.send(f"**{chosen.mention}** — {text}")
+                
+            except Exception as e:
+                await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+                log_error(e, "who_cmd")
+        
+        bot.tree.add_command(who_cmd, guild=guild)
+        print(f"✅ Команда /кто принудительно зарегистрирована для сервера {GUILD_ID}")
+        
         await bot.tree.sync(guild=guild)
         print(f"✅ Команды синхронизированы для сервера {GUILD_ID}")
+        
     except Exception as e:
         log_error(e, "sync")
     
