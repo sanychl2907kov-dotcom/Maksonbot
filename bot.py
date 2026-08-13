@@ -288,7 +288,7 @@ async def assign_random_moderator(thread, guild):
     
     return chosen
 
-# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА ==========
+# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА (БЕЗ ПРОГРЕССА И СЧЁТЧИКА) ==========
 def create_ticket_embed(user, ticket_type, subcategory, status="open", category="📌 Общее"):
     if status == "open":
         color = discord.Color.green()
@@ -594,8 +594,7 @@ class CloseButton(Button):
             
             if not is_moderator(i.user):
                 await i.followup.send("❌ Нет прав", ephemeral=True)
-                return
-            if not author_id:
+                return            if not author_id:
                 await i.followup.send("❌ Тикет не найден", ephemeral=True)
                 ticket_closed.add(i.channel.id)
                 return
@@ -766,6 +765,21 @@ class SubButton(Button):
                     await safe_add_user(t, owner)
                 mention = f"<@{AUTHORIZED_USER_ID}>"
             
+            # === УДАЛЯЕМ ВСЕХ ЛИШНИХ УЧАСТНИКОВ ===
+            try:
+                for member in t.members:
+                    if member.id == bot.user.id or member.id == i.user.id:
+                        continue
+                    if self.typ == "жалоба":
+                        is_mod = any(r.id in SUPPORT_ROLE_IDS for r in member.roles)
+                        if not is_mod and member.id != AUTHORIZED_USER_ID:
+                            await t.remove_user(member)
+                    else:
+                        if member.id != AUTHORIZED_USER_ID:
+                            await t.remove_user(member)
+            except Exception as e:
+                log_error(e, "remove_extra_users")
+            
             ticket_owners[t.id] = uid
             ticket_creation_time[t.id] = time.time()
             db_add(t.id, uid, i.user.name, self.typ, self.sub, self.sub, assigned_mod_id)
@@ -777,6 +791,23 @@ class SubButton(Button):
             cv.add_item(CloseButton())
             cv.add_item(PinButton())
             await t.send(embed=embed)
+            
+            # === ОТПРАВЛЯЕМ ШАБЛОН ===
+            if self.typ == "жалоба":
+                await t.send(
+                    "**📋 Заполните форму жалобы:**\n\n"
+                    "**1. Ник нарушителя:** _________\n"
+                    "**2. Дата произошедшего:** _________\n"
+                    "**3. Доказательство или скриншот:** _________\n\n"
+                    "✏️ *Опишите ситуацию подробнее в следующем сообщении.*"
+                )
+            else:
+                await t.send(
+                    "**💡 Опишите вашу идею:**\n\n"
+                    "**1. Ваше предложение или идея:** _________\n\n"
+                    "✏️ *Напишите подробности в следующем сообщении.*"
+                )
+            
             if mention:
                 await t.send(f"🔔 {mention}")
             await t.send("🔧 **Управление:**", view=cv)
@@ -1106,34 +1137,6 @@ async def on_message(message):
         return
     if message.channel.id in ticket_owners:
         db_update_activity(message.channel.id)
-        
-        # === АВТО-КАТЕГОРИЗАЦИЯ ===
-        try:
-            async for msg in message.channel.history(limit=5):
-                if msg.author == bot.user and msg.embeds:
-                    old_embed = msg.embeds[0]
-                    if "Категория:" in old_embed.description:
-                        if "📌 Общее" in old_embed.description:
-                            first_msg = None
-                            async for m in message.channel.history(limit=10):
-                                if not m.author.bot:
-                                    first_msg = m
-                                    break
-                            
-                            if first_msg:
-                                category = detect_category(first_msg.content)
-                                new_embed = discord.Embed(
-                                    title=old_embed.title,
-                                    description=old_embed.description.replace("📌 Общее", category),
-                                    color=old_embed.color
-                                )
-                                new_embed.set_thumbnail(url=old_embed.thumbnail.url)
-                                new_embed.set_footer(text=old_embed.footer.text)
-                                await msg.edit(embed=new_embed)
-                    break
-        except Exception as e:
-            log_error(e, "auto_category")
-    
     await bot.process_commands(message)
 
 # ========== ЗАПУСК ==========
