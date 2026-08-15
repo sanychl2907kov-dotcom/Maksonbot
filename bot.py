@@ -41,7 +41,7 @@ MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
 GUILD_ID = 580351461180047379
-ALLOWED_CHANNEL_ID = 1478737906028908757  # <-- ЗДЕСЬ ID КАНАЛА, ГДЕ РАБОТАЕТ /кто
+ALLOWED_CHANNEL_ID = 1478737906028908757  # КАНАЛ ДЛЯ /кто
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1016,45 +1016,7 @@ async def commands_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
 
-# ========== КОМАНДА /кто (ГЛОБАЛЬНАЯ) ==========
-@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
-@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
-async def who_cmd(i: discord.Interaction, text: str):
-    if i.channel.id != ALLOWED_CHANNEL_ID:
-        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
-        return
-    
-    await i.response.defer(ephemeral=False)
-    try:
-        members = [m for m in i.guild.members if not m.bot and m.id != i.user.id]
-        
-        if not members:
-            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
-            return
-        
-        chosen = random.choice(members)
-        await i.followup.send(f"**{chosen.mention}** — {text}")
-        
-    except Exception as e:
-        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-        log_error(e, "who_cmd")
-
-# ========== КОМАНДА /sync (ДЛЯ ПРИНУДИТЕЛЬНОЙ СИНХРОНИЗАЦИИ) ==========
-@bot.tree.command(name="sync", description="Синхронизировать команды бота (только владелец)")
-async def sync_cmd(i: discord.Interaction):
-    if i.user.id != AUTHORIZED_USER_ID:
-        await i.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    await i.response.defer(ephemeral=True)
-    try:
-        await bot.tree.sync()
-        await i.followup.send("✅ Команды синхронизированы глобально!", ephemeral=True)
-    except Exception as e:
-        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ========== КОМАНДА !кто (ТЕКСТОВАЯ, НА ВСЯКИЙ СЛУЧАЙ) ==========
-# ========== КОМАНДА /кто (ПРИВЯЗАННАЯ К СЕРВЕРУ) ==========
+# ========== КОМАНДА /кто (ПРИВЯЗАННАЯ К СЕРВЕРУ И КАНАЛУ) ==========
 @bot.tree.command(
     name="кто",
     description="Выбирает случайного участника сервера и подставляет текст",
@@ -1062,8 +1024,9 @@ async def sync_cmd(i: discord.Interaction):
 )
 @app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
 async def who_cmd(i: discord.Interaction, text: str):
-    if i.channel.id != ALLOWED_CHANNEL_ID:
-        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
+    # ===== ПРОВЕРКА: ТОЛЬКО В КАНАЛЕ =====
+    if i.channel.id != 1478737906028908757:
+        await i.response.send_message(f"❌ Эта команда работает только в канале <#1478737906028908757>.", ephemeral=True)
         return
     
     await i.response.defer(ephemeral=False)
@@ -1089,7 +1052,46 @@ async def who_cmd(i: discord.Interaction, text: str):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "who_cmd")
 
-# ========== КОМАНДА !ping (ДЛЯ ПРОВЕРКИ) ==========
+# ========== КОМАНДА /sync ==========
+@bot.tree.command(name="sync", description="Синхронизировать команды бота (только владелец)")
+async def sync_cmd(i: discord.Interaction):
+    if i.user.id != AUTHORIZED_USER_ID:
+        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    await i.response.defer(ephemeral=True)
+    try:
+        await bot.tree.sync()
+        await i.followup.send("✅ Команды синхронизированы глобально!", ephemeral=True)
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+# ========== КОМАНДА !кто (НА ВСЯКИЙ СЛУЧАЙ) ==========
+@bot.command(name="кто")
+async def who_text(ctx, *, text: str = "ничего не делает"):
+    """!кто текст — выбирает случайного участника"""
+    if ctx.channel.id != 1478737906028908757:
+        await ctx.send(f"❌ Эта команда работает только в канале <#1478737906028908757>.")
+        return
+    
+    members = [m for m in ctx.guild.members if not m.bot and m.id != ctx.author.id]
+    
+    if not members:
+        await ctx.send("❌ Нет доступных участников для выбора.")
+        return
+    
+    chosen = random.choice(members)
+    
+    embed = discord.Embed(
+        title="❓ Кто?",
+        description=f"Я считаю, что {chosen.mention} — {text}",
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"Вопрос от {ctx.author.display_name}")
+    
+    await ctx.send(embed=embed)
+
+# ========== КОМАНДА !ping ==========
 @bot.command(name="ping")
 async def ping(ctx):
     await ctx.send("Понг!")
