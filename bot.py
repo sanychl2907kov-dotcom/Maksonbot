@@ -1054,21 +1054,40 @@ async def sync_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 # ========== КОМАНДА !кто (ТЕКСТОВАЯ, НА ВСЯКИЙ СЛУЧАЙ) ==========
-@bot.command(name="кто")
-async def who_text(ctx, *, text: str = "ничего не делает"):
-    """!кто текст — выбирает случайного участника"""
-    if ctx.channel.id != ALLOWED_CHANNEL_ID:
-        await ctx.send(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.")
+# ========== КОМАНДА /кто (ПРИВЯЗАННАЯ К СЕРВЕРУ) ==========
+@bot.tree.command(
+    name="кто",
+    description="Выбирает случайного участника сервера и подставляет текст",
+    guild=discord.Object(id=580351461180047379)
+)
+@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
+async def who_cmd(i: discord.Interaction, text: str):
+    if i.channel.id != ALLOWED_CHANNEL_ID:
+        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
         return
     
-    members = [m for m in ctx.guild.members if not m.bot and m.id != ctx.author.id]
-    
-    if not members:
-        await ctx.send("❌ Нет доступных участников для выбора.")
-        return
-    
-    chosen = random.choice(members)
-    await ctx.send(f"**{chosen.mention}** — {text}")
+    await i.response.defer(ephemeral=False)
+    try:
+        members = [m for m in i.guild.members if not m.bot and m.id != i.user.id]
+        
+        if not members:
+            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
+            return
+        
+        chosen = random.choice(members)
+        
+        embed = discord.Embed(
+            title="❓ Кто?",
+            description=f"Я считаю, что {chosen.mention} — {text}",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"Вопрос от {i.user.display_name}")
+        
+        await i.followup.send(embed=embed)
+        
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "who_cmd")
 
 # ========== КОМАНДА !ping (ДЛЯ ПРОВЕРКИ) ==========
 @bot.command(name="ping")
