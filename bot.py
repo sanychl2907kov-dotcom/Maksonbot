@@ -199,6 +199,7 @@ COMMANDS_RULES_TEXT = (
     "**5. Ответственность**\n"
     "• Нарушение → предупреждение → лишение прав."
 )
+
 RULES_DICT = {
     "1": (
         "**1. Основные правила поведения**\n"
@@ -1015,7 +1016,44 @@ async def commands_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
 
-# ========== КОМАНДА !кто (РАБОТАЕТ МГНОВЕННО) ==========
+# ========== КОМАНДА /кто (ГЛОБАЛЬНАЯ) ==========
+@bot.tree.command(name="кто", description="Выбирает случайного участника сервера и подставляет текст")
+@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
+async def who_cmd(i: discord.Interaction, text: str):
+    if i.channel.id != ALLOWED_CHANNEL_ID:
+        await i.response.send_message(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.", ephemeral=True)
+        return
+    
+    await i.response.defer(ephemeral=False)
+    try:
+        members = [m for m in i.guild.members if not m.bot and m.id != i.user.id]
+        
+        if not members:
+            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
+            return
+        
+        chosen = random.choice(members)
+        await i.followup.send(f"**{chosen.mention}** — {text}")
+        
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        log_error(e, "who_cmd")
+
+# ========== КОМАНДА /sync (ДЛЯ ПРИНУДИТЕЛЬНОЙ СИНХРОНИЗАЦИИ) ==========
+@bot.tree.command(name="sync", description="Синхронизировать команды бота (только владелец)")
+async def sync_cmd(i: discord.Interaction):
+    if i.user.id != AUTHORIZED_USER_ID:
+        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    await i.response.defer(ephemeral=True)
+    try:
+        await bot.tree.sync()
+        await i.followup.send("✅ Команды синхронизированы глобально!", ephemeral=True)
+    except Exception as e:
+        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+# ========== КОМАНДА !кто (ТЕКСТОВАЯ, НА ВСЯКИЙ СЛУЧАЙ) ==========
 @bot.command(name="кто")
 async def who_text(ctx, *, text: str = "ничего не делает"):
     """!кто текст — выбирает случайного участника"""
@@ -1023,10 +1061,7 @@ async def who_text(ctx, *, text: str = "ничего не делает"):
         await ctx.send(f"❌ Эта команда работает только в канале <#{ALLOWED_CHANNEL_ID}>.")
         return
     
-    members = []
-    for member in ctx.guild.members:
-        if not member.bot and member.status != discord.Status.offline and member.id != ctx.author.id:
-            members.append(member)
+    members = [m for m in ctx.guild.members if not m.bot and m.id != ctx.author.id]
     
     if not members:
         await ctx.send("❌ Нет доступных участников для выбора.")
@@ -1100,9 +1135,8 @@ async def on_ready():
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     try:
-        guild = discord.Object(id=GUILD_ID)
-        await bot.tree.sync(guild=guild)
-        print(f"✅ Команды синхронизированы для сервера {GUILD_ID}")
+        await bot.tree.sync()
+        print("✅ Команды синхронизированы глобально")
     except Exception as e:
         log_error(e, "sync")
     
