@@ -41,7 +41,7 @@ MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
 GUILD_ID = 580351461180047379
-ALLOWED_CHANNEL_ID = 1478737906028908757
+ALLOWED_CHANNEL_ID = 1478737906028908757  # <-- ЗДЕСЬ ID КАНАЛА, ГДЕ РАБОТАЕТ /кто
 
 intents = discord.Intents.default()
 intents.message_content = True
