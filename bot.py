@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from discord.ui import View, Button, Select, Modal, TextInput
+from discord.ui import View, Button, Select
 import time
 import asyncio
 import os
@@ -124,6 +124,7 @@ threading.Timer(1.0, start_flask).start()
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 
+# ===== ДОБАВЛЕНО: voice_channel_id в таблицу tickets =====
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT UNIQUE, user_id TEXT, user_name TEXT,
@@ -235,18 +236,6 @@ def db_clear_warnings(user_id):
 def db_get_warning_count(user_id):
     c.execute("SELECT COUNT(*) FROM warnings WHERE user_id=?", (str(user_id),))
     return c.fetchone()[0]
-
-def db_get_tickets_by_user(user_id):
-    c.execute("SELECT thread_id, ticket_type, subcategory, status, created_at FROM tickets WHERE user_id=? ORDER BY created_at DESC", (str(user_id),))
-    return c.fetchall()
-
-def db_rename_ticket(thread_id, new_name):
-    c.execute("UPDATE tickets SET subcategory=? WHERE thread_id=?", (new_name, str(thread_id)))
-    conn.commit()
-
-def db_set_status(thread_id, status):
-    c.execute("UPDATE tickets SET status=? WHERE thread_id=?", (status, str(thread_id)))
-    conn.commit()
 
 # ========== ГЛОБАЛЬНЫЕ ДАННЫЕ ==========
 ticket_owners = {}
@@ -564,6 +553,172 @@ async def close_ticket_auto(thread, reason="Бездействие"):
     except:
         pass
 
+async def create_rules_thread(interaction, update=False):
+    global RULES_THREAD_ID
+    try:
+        existing_id = db_get_rules_thread(interaction.channel.id)
+        if existing_id:
+            thread = interaction.guild.get_thread(existing_id)
+            if thread:
+                RULES_THREAD_ID = thread.id
+                if update:
+                    await thread.purge(limit=100)
+                    await thread.send(embed=discord.Embed(
+                        title="📋 Правила сервера (обновлены)",
+                        description="\n\n".join(RULES_DICT.values()),
+                        color=discord.Color.gold()
+                    ))
+                    await thread.send("🔄 Правила обновлены!")
+                return thread
+        for t in interaction.channel.threads:
+            if t.name == "📋-правила-поддержки":
+                db_set_rules_thread(interaction.channel.id, t.id)
+                RULES_THREAD_ID = t.id
+                if update:
+                    await t.purge(limit=100)
+                    await t.send(embed=discord.Embed(
+                        title="📋 Правила сервера (обновлены)",
+                        description="\n\n".join(RULES_DICT.values()),
+                        color=discord.Color.gold()
+                    ))
+                    await t.send("🔄 Правила обновлены!")
+                return t
+        try:
+            thread = await interaction.channel.create_thread(
+                name="📋-правила-поддержки",
+                auto_archive_duration=10080,
+                type=discord.ChannelType.public_thread
+            )
+        except discord.Forbidden:
+            return None
+        await thread.send(embed=discord.Embed(
+            title="📋 Правила сервера",
+            description="\n\n".join(RULES_DICT.values()),
+            color=discord.Color.gold()
+        ))
+        await thread.send("🔒 Ветка с правилами создана. Архивация через 7 дней.")
+        db_set_rules_thread(interaction.channel.id, thread.id)
+        RULES_THREAD_ID = thread.id
+        return thread
+    except Exception as e:
+        log_error(e, "create_rules_thread")
+        return None
+
+async def create_commands_rules_thread(interaction):
+    global COMMANDS_RULES_THREAD_ID
+    try:
+        for t in interaction.channel.threads:
+            if t.name == "📋-правила-команд":
+                COMMANDS_RULES_THREAD_ID = t.id
+                return t
+        try:
+            thread = await interaction.channel.create_thread(
+                name="📋-правила-команд",
+                auto_archive_duration=10080,
+                type=discord.ChannelType.private_thread
+            )
+        except discord.Forbidden:
+            return None
+        COMMANDS_RULES_THREAD_ID = thread.id
+        added = 0
+        for role_id in SUPPORT_ROLE_IDS:
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                continue
+            for member in role.members:
+                try:
+                    await thread.add_user(member)
+                    added += 1
+                    await asyncio.sleep(0.05)
+                except:
+                    pass
+        owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
+        if owner:
+            try:
+                await thread.add_user(owner)
+                added += 1
+            except:
+                pass
+        embed = discord.Embed(
+            title="📋 Правила команд для администрации",
+            description=COMMANDS_RULES_TEXT,
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"MAKSON • Добавлено {added} участников")
+        await thread.send(embed=embed)
+        await thread.send("🔒 Приватная ветка. Видна только модераторам.")
+        return thread
+    except Exception as e:
+        log_error(e, "create_commands_rules_thread")
+        return None
+
+async def send_rules(thread, rules=None, mention=None):
+    if rules:
+        found = []
+        for r in rules.split(","):
+            r = r.strip()
+            if r in RULES_DICT:
+                found.append(RULES_DICT[r])
+        if not found:
+            await thread.send(embed=discord.Embed(
+                title="❌ Ошибка",
+                description=f"Правила не найдены. Доступные номера: {', '.join(RULES_DICT.keys())}",
+                color=discord.Color.red()
+            ))
+            return
+        await thread.send(embed=discord.Embed(
+            title="📋 Нарушение правил",
+            description=f"{mention or ''}\n\n" + "\n\n".join(found),
+            color=discord.Color.red()
+        ))
+        return
+    for num, text in RULES_DICT.items():
+        lines = text.split('\n')
+        title = lines[0].strip()
+        description = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+        embed = discord.Embed(
+            title=f"📌 {num}. {title}",
+            description=description,
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"MAKSON • Правило {num} из {len(RULES_DICT)}")
+        await thread.send(embed=embed)
+        await asyncio.sleep(0.3)
+
+# ========== ФОНОВАЯ AI-КАТЕГОРИЗАЦИЯ ==========
+async def update_ticket_category(thread, user, ticket_type, subcategory):
+    try:
+        def check(m):
+            return m.author == user and m.channel.id == thread.id
+        
+        first_msg = await bot.wait_for('message', timeout=30, check=check)
+        if not first_msg:
+            return
+        
+        if OPENAI_AVAILABLE and OPENAI_API_KEY:
+            ai_result = await ai_categorize(first_msg.content)
+            category = ai_result.get("category", "📌 Общее")
+            priority = ai_result.get("priority", "Средний")
+            sentiment = ai_result.get("sentiment", "Нейтральный")
+        else:
+            category = detect_category(first_msg.content)
+            priority = "Средний"
+            sentiment = "Нейтральный"
+        
+        async for msg in thread.history(limit=10):
+            if msg.author == bot.user and msg.embeds:
+                old_embed = msg.embeds[0]
+                new_embed = create_ticket_embed(
+                    user, ticket_type, subcategory, "open",
+                    category, priority, sentiment
+                )
+                await msg.edit(embed=new_embed)
+                break
+    except asyncio.TimeoutError:
+        pass
+    except Exception as e:
+        log_error(e, "update_ticket_category")
+
 # ========== КНОПКИ ==========
 class CloseButton(Button):
     def __init__(self):
@@ -660,19 +815,251 @@ class PinButton(Button):
                 pass
             log_error(e, "PinButton")
 
-class TicketView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(CloseButton())
-        self.add_item(Button(label="🟡 В работу", style=discord.ButtonStyle.primary, custom_id="ticket_progress", row=0))
-        self.add_item(Button(label="✏️ Переименовать", style=discord.ButtonStyle.secondary, custom_id="ticket_rename", row=0))
+# ========== КОМАНДЫ (ВАШИ СТАРЫЕ) ==========
 
-# ========== СОЗДАНИЕ ТИКЕТА ==========
+@bot.tree.command(name="panel", description="Создать панель для тикетов")
+@app_commands.default_permissions(administrator=True)
+async def panel(interaction: discord.Interaction):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎫 Создание тикета",
+        description="Нажми на кнопку ниже, чтобы открыть тикет.\n"
+                    "Выбери категорию и опиши проблему.",
+        color=discord.Color.gold()
+    )
+
+    view = View(timeout=None)
+    view.add_item(Button(label="📩 Создать тикет", style=discord.ButtonStyle.primary, custom_id="create_ticket"))
+
+    await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю")
+@app_commands.describe(user="Пользователь", duration="Время в минутах", reason="Причина")
+async def timeout_command(interaction: discord.Interaction, user: discord.Member, duration: int, reason: str = "Не указана"):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    if duration > 30:
+        await interaction.response.send_message("❌ Максимум 30 минут", ephemeral=True)
+        return
+    if user.id == interaction.user.id:
+        await interaction.response.send_message("❌ Нельзя выдать тайм-аут себе", ephemeral=True)
+        return
+    if user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Нельзя выдать тайм-аут администратору", ephemeral=True)
+        return
+    
+    try:
+        await user.timeout(discord.utils.utcnow() + timedelta(minutes=duration), reason=reason)
+        await interaction.response.send_message(f"✅ {user.mention} получил тайм-аут на {duration} мин. Причина: {reason}")
+        db_add_log(user.id, interaction.user.id, "timeout", f"{duration} мин, причина: {reason}")
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+@bot.tree.command(name="cleanup", description="Очистить сообщения в канале")
+@app_commands.describe(count="Количество сообщений")
+async def cleanup_command(interaction: discord.Interaction, count: int = 10):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    if count > 100:
+        await interaction.response.send_message("❌ Максимум 100 сообщений", ephemeral=True)
+        return
+    
+    try:
+        deleted = await interaction.channel.purge(limit=count)
+        await interaction.response.send_message(f"✅ Удалено {len(deleted)} сообщений", ephemeral=True)
+        db_add_log(interaction.user.id, interaction.user.id, "cleanup", f"Удалено {len(deleted)} сообщений")
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+@bot.tree.command(name="send_rules", description="Отправить правила пользователю")
+@app_commands.describe(user="Пользователь", rule_numbers="Номера правил через запятую (например: 1,3,5)")
+async def send_rules_command(interaction: discord.Interaction, user: discord.Member, rule_numbers: str = None):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    if rule_numbers:
+        numbers = [r.strip() for r in rule_numbers.split(",")]
+        found = []
+        for num in numbers:
+            if num in RULES_DICT:
+                found.append(RULES_DICT[num])
+        if not found:
+            await interaction.response.send_message("❌ Правила не найдены", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="📋 Правила",
+            description=f"{user.mention}\n\n" + "\n\n".join(found),
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(content=user.mention, embed=embed)
+    else:
+        embed = discord.Embed(
+            title="📋 Все правила сервера",
+            description="\n\n".join(RULES_DICT.values()),
+            color=discord.Color.gold()
+        )
+        await interaction.response.send_message(content=user.mention, embed=embed)
+    
+    db_add_log(user.id, interaction.user.id, "send_rules", f"Отправлены правила пользователю {user.name}")
+
+@bot.tree.command(name="toggle_access", description="Заблокировать/разблокировать доступ к командам")
+@app_commands.describe(user="Пользователь", duration="Время в минутах (опционально)")
+async def toggle_access_command(interaction: discord.Interaction, user: discord.Member, duration: int = None):
+    if interaction.user.id != AUTHORIZED_USER_ID:
+        await interaction.response.send_message("❌ Только владелец бота", ephemeral=True)
+        return
+    
+    if user.id == AUTHORIZED_USER_ID:
+        await interaction.response.send_message("❌ Нельзя заблокировать владельца", ephemeral=True)
+        return
+    
+    if db_is_access_banned(user.id):
+        db_remove_access_ban(user.id)
+        await interaction.response.send_message(f"✅ Доступ для {user.mention} восстановлен")
+    else:
+        db_toggle_access(user.id, duration)
+        if duration:
+            await interaction.response.send_message(f"✅ Доступ для {user.mention} заблокирован на {duration} минут")
+        else:
+            await interaction.response.send_message(f"✅ Доступ для {user.mention} заблокирован навсегда")
+
+@bot.tree.command(name="warn", description="Выдать предупреждение пользователю")
+@app_commands.describe(user="Пользователь", reason="Причина")
+async def warn_command(interaction: discord.Interaction, user: discord.Member, reason: str = "Не указана"):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    db_add_warning(user.id, interaction.user.id, reason)
+    count = db_get_warning_count(user.id)
+    
+    await interaction.response.send_message(f"⚠️ {user.mention} получил предупреждение. Всего: {count}/{WARN_LIMIT}\nПричина: {reason}")
+    db_add_log(user.id, interaction.user.id, "warn", reason)
+    
+    if count >= WARN_LIMIT:
+        try:
+            await user.timeout(discord.utils.utcnow() + timedelta(minutes=WARN_TIMEOUT_MINUTES), reason="Превышен лимит предупреждений")
+            await interaction.channel.send(f"⏰ {user.mention} получил тайм-аут {WARN_TIMEOUT_MINUTES} мин за превышение лимита предупреждений")
+        except:
+            pass
+
+@bot.tree.command(name="warns", description="Показать предупреждения пользователя")
+@app_commands.describe(user="Пользователь")
+async def warns_command(interaction: discord.Interaction, user: discord.Member):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    warnings = db_get_warnings(user.id)
+    if not warnings:
+        await interaction.response.send_message(f"✅ У {user.mention} нет предупреждений", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title=f"⚠️ Предупреждения {user.name}",
+        color=discord.Color.orange()
+    )
+    for wid, mod_id, reason, created_at in warnings[:10]:
+        embed.add_field(
+            name=f"#{wid} от {created_at[:16]}",
+            value=f"Модератор: <@{mod_id}>\nПричина: {reason}",
+            inline=False
+        )
+    embed.set_footer(text=f"Всего: {len(warnings)}")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="unwarn", description="Снять последнее предупреждение")
+@app_commands.describe(user="Пользователь")
+async def unwarn_command(interaction: discord.Interaction, user: discord.Member):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    
+    warnings = db_get_warnings(user.id)
+    if not warnings:
+        await interaction.response.send_message(f"❌ У {user.mention} нет предупреждений", ephemeral=True)
+        return
+    
+    db_remove_last_warning(user.id)
+    count = db_get_warning_count(user.id)
+    await interaction.response.send_message(f"✅ Снято последнее предупреждение у {user.mention}. Осталось: {count}")
+    db_add_log(user.id, interaction.user.id, "unwarn", f"Снято предупреждение")
+
+# ========== ОБРАБОТЧИК КНОПОК ==========
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type != discord.InteractionType.component:
+        return
+    
+    custom_id = interaction.data.get("custom_id")
+    if not custom_id:
+        return
+
+    if custom_id == "create_ticket":
+        modal = discord.ui.Modal(title="Создание тикета")
+        modal.add_item(Select(
+            placeholder="Выберите категорию",
+            options=[
+                discord.SelectOption(label="🐛 Баг", value="bug"),
+                discord.SelectOption(label="🚨 Жалоба", value="complaint"),
+                discord.SelectOption(label="❓ Вопрос", value="question"),
+                discord.SelectOption(label="💡 Предложение", value="suggestion"),
+                discord.SelectOption(label="👤 Аккаунт", value="account"),
+                discord.SelectOption(label="💰 Донат", value="donate"),
+                discord.SelectOption(label="📌 Общее", value="general"),
+            ],
+            custom_id="ticket_type_select"
+        ))
+        modal.add_item(discord.ui.TextInput(label="Тема", placeholder="Краткое описание", required=True, max_length=50))
+        modal.add_item(discord.ui.TextInput(label="Описание", placeholder="Подробности", required=True, style=discord.TextStyle.paragraph, max_length=500))
+        
+        await interaction.response.send_modal(modal)
+        return
+
+# ========== ОБРАБОТЧИК МОДАЛОВ ==========
+@bot.event
+async def on_modal_submit(interaction: discord.Interaction):
+    if interaction.data.get("title") == "Создание тикета":
+        components = interaction.data["components"]
+        ticket_type_value = None
+        subject = None
+        description = None
+        
+        for comp in components:
+            if comp["components"][0]["custom_id"] == "ticket_type_select":
+                ticket_type_value = comp["components"][0]["value"]
+            elif comp["components"][0]["label"] == "Тема":
+                subject = comp["components"][0]["value"]
+            elif comp["components"][0]["label"] == "Описание":
+                description = comp["components"][0]["value"]
+        
+        type_map = {
+            "bug": "🐛 Баг",
+            "complaint": "🚨 Жалоба",
+            "question": "❓ Вопрос",
+            "suggestion": "💡 Предложение",
+            "account": "👤 Аккаунт",
+            "donate": "💰 Донат",
+            "general": "📌 Общее"
+        }
+        ticket_type = type_map.get(ticket_type_value, "📌 Общее")
+        
+        await create_ticket_from_modal(interaction, ticket_type, subject, description)
+        return
+
 async def create_ticket_from_modal(interaction: discord.Interaction, ticket_type: str, subcategory: str, reason: str = ""):
     user = interaction.user
     guild = interaction.guild
     channel = interaction.channel
 
+    # Проверка на дубликат
     for tid, uid in ticket_owners.items():
         if uid == user.id:
             thread = guild.get_thread(tid)
@@ -736,7 +1123,9 @@ async def create_ticket_from_modal(interaction: discord.Interaction, ticket_type
     await create_voice_channel(interaction, thread_name, thread.id)
 
     embed = create_ticket_embed(user, ticket_type, subcategory, "open", category)
-    view = TicketView()
+    view = View(timeout=None)
+    view.add_item(CloseButton())
+    view.add_item(PinButton(thread.id))
     await thread.send(embed=embed, view=view)
     await thread.send(f"👋 {user.mention}, ваш тикет создан! Опишите проблему.")
 
@@ -746,516 +1135,9 @@ async def create_ticket_from_modal(interaction: discord.Interaction, ticket_type
     await interaction.response.send_message(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
 
     if reason:
-        bot.loop.create_task(update_ticket_category(thread, user, ticket_type, subcategory, reason))
+        bot.loop.create_task(update_ticket_category(thread, user, ticket_type, subcategory))
 
     return thread
-
-async def update_ticket_category(thread, user, ticket_type, subcategory, initial_text):
-    try:
-        def check(m):
-            return m.author == user and m.channel.id == thread.id and m.id != thread.last_message_id
-        try:
-            msg = await bot.wait_for('message', timeout=60, check=check)
-            text = msg.content
-        except asyncio.TimeoutError:
-            text = initial_text
-        
-        if OPENAI_AVAILABLE and OPENAI_API_KEY:
-            ai_result = await ai_categorize(text)
-            category = ai_result.get("category", "📌 Общее")
-            priority = ai_result.get("priority", "Средний")
-            sentiment = ai_result.get("sentiment", "Нейтральный")
-        else:
-            category = detect_category(text)
-            priority = "Средний"
-            sentiment = "Нейтральный"
-        
-        async for msg in thread.history(limit=10):
-            if msg.author == bot.user and msg.embeds:
-                new_embed = create_ticket_embed(user, ticket_type, subcategory, "open", category, priority, sentiment)
-                await msg.edit(embed=new_embed)
-                break
-    except Exception as e:
-        log_error(e, "update_ticket_category")
-
-# ========== КОМАНДА /SETUP_TICKETS (ГЛАВНАЯ КОМАНДА) ==========
-@bot.tree.command(name="setup_tickets", description="Настроить панель для создания тикетов")
-@app_commands.default_permissions(administrator=True)
-async def setup_tickets(interaction: discord.Interaction):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="🎫 Создание тикета",
-        description="Нажми на кнопку ниже, чтобы открыть тикет.\n"
-                    "Выбери категорию и опиши проблему.",
-        color=discord.Color.gold()
-    )
-
-    view = View(timeout=None)
-    view.add_item(Button(label="📩 Создать тикет", style=discord.ButtonStyle.primary, custom_id="create_ticket"))
-
-    await interaction.response.send_message(embed=embed, view=view)
-    db_add_log(interaction.user.id, interaction.user.id, "setup_tickets", "Создана панель тикетов")
-
-# ========== ОБРАБОТЧИК КНОПОК ==========
-@bot.event
-async def on_interaction(interaction: discord.Interaction):
-    if interaction.type != discord.InteractionType.component:
-        return
-    
-    custom_id = interaction.data.get("custom_id")
-    if not custom_id:
-        return
-
-    if custom_id == "create_ticket":
-        modal = Modal(title="Создание тикета")
-        modal.add_item(Select(
-            placeholder="Выберите категорию",
-            options=[
-                discord.SelectOption(label="🐛 Баг", value="bug"),
-                discord.SelectOption(label="🚨 Жалоба", value="complaint"),
-                discord.SelectOption(label="❓ Вопрос", value="question"),
-                discord.SelectOption(label="💡 Предложение", value="suggestion"),
-                discord.SelectOption(label="👤 Аккаунт", value="account"),
-                discord.SelectOption(label="💰 Донат", value="donate"),
-                discord.SelectOption(label="📌 Общее", value="general"),
-            ],
-            custom_id="ticket_type_select"
-        ))
-        modal.add_item(TextInput(label="Тема", placeholder="Краткое описание", required=True, max_length=50))
-        modal.add_item(TextInput(label="Описание", placeholder="Подробности", required=True, style=discord.TextStyle.paragraph, max_length=500))
-        
-        await interaction.response.send_modal(modal)
-        return
-
-    if custom_id == "ticket_progress":
-        if not isinstance(interaction.channel, discord.Thread):
-            await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-            return
-        if interaction.channel.id not in ticket_owners:
-            await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-            return
-        if not is_moderator(interaction.user):
-            await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-            return
-        
-        db_set_status(interaction.channel.id, "in_progress")
-        
-        async for msg in interaction.channel.history(limit=10):
-            if msg.author == bot.user and msg.embeds:
-                embed = msg.embeds[0]
-                new_embed = discord.Embed.from_dict(embed.to_dict())
-                desc = new_embed.description
-                if "🟢 ОТКРЫТ" in desc:
-                    desc = desc.replace("🟢 ОТКРЫТ", "🟡 В РАБОТЕ")
-                elif "🔴 ЗАКРЫТ" in desc:
-                    await interaction.response.send_message("❌ Тикет уже закрыт", ephemeral=True)
-                    return
-                new_embed.description = desc
-                new_embed.color = discord.Color.gold()
-                await msg.edit(embed=new_embed)
-                break
-        
-        await interaction.response.send_message(f"✅ {interaction.user.mention} взял тикет в работу!", ephemeral=False)
-        db_add_log(interaction.user.id, interaction.user.id, "ticket_progress", f"Взял в работу тикет {interaction.channel.name}")
-        return
-
-    if custom_id == "ticket_rename":
-        if not isinstance(interaction.channel, discord.Thread):
-            await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-            return
-        if interaction.channel.id not in ticket_owners:
-            await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-            return
-        if not is_moderator(interaction.user):
-            await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-            return
-        
-        modal = Modal(title="Переименование тикета")
-        modal.add_item(TextInput(label="Новое название", placeholder="Введите новое имя", required=True, max_length=50))
-        await interaction.response.send_modal(modal)
-        return
-
-# ========== ОБРАБОТЧИК МОДАЛОВ ==========
-@bot.event
-async def on_modal_submit(interaction: discord.Interaction):
-    if interaction.data.get("title") == "Создание тикета":
-        components = interaction.data["components"]
-        ticket_type_value = None
-        subject = None
-        description = None
-        
-        for comp in components:
-            if comp["components"][0]["custom_id"] == "ticket_type_select":
-                ticket_type_value = comp["components"][0]["value"]
-            elif comp["components"][0]["label"] == "Тема":
-                subject = comp["components"][0]["value"]
-            elif comp["components"][0]["label"] == "Описание":
-                description = comp["components"][0]["value"]
-        
-        type_map = {
-            "bug": "🐛 Баг",
-            "complaint": "🚨 Жалоба",
-            "question": "❓ Вопрос",
-            "suggestion": "💡 Предложение",
-            "account": "👤 Аккаунт",
-            "donate": "💰 Донат",
-            "general": "📌 Общее"
-        }
-        ticket_type = type_map.get(ticket_type_value, "📌 Общее")
-        
-        await create_ticket_from_modal(interaction, ticket_type, subject, description)
-        return
-
-    if interaction.data.get("title") == "Переименование тикета":
-        new_name = interaction.data["components"][0]["components"][0]["value"]
-        thread = interaction.channel
-        
-        try:
-            await thread.edit(name=f"📩-{new_name[:40]}")
-            db_rename_ticket(thread.id, new_name)
-            await interaction.response.send_message(f"✅ Тикет переименован в: {new_name}", ephemeral=True)
-            db_add_log(interaction.user.id, interaction.user.id, "rename_ticket", f"Переименовал тикет в {new_name}")
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-        return
-
-# ========== КОМАНДЫ ==========
-
-# ===== КОМАНДА /TIMEOUT =====
-@bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю")
-@app_commands.describe(user="Пользователь", duration="Время в минутах", reason="Причина")
-async def timeout_command(interaction: discord.Interaction, user: discord.Member, duration: int, reason: str = "Не указана"):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    if duration > 30:
-        await interaction.response.send_message("❌ Максимум 30 минут", ephemeral=True)
-        return
-    if user.id == interaction.user.id:
-        await interaction.response.send_message("❌ Нельзя выдать тайм-аут себе", ephemeral=True)
-        return
-    if user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ Нельзя выдать тайм-аут администратору", ephemeral=True)
-        return
-    
-    try:
-        await user.timeout(discord.utils.utcnow() + timedelta(minutes=duration), reason=reason)
-        await interaction.response.send_message(f"✅ {user.mention} получил тайм-аут на {duration} мин. Причина: {reason}")
-        db_add_log(user.id, interaction.user.id, "timeout", f"{duration} мин, причина: {reason}")
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ===== КОМАНДА /CLEANUP =====
-@bot.tree.command(name="cleanup", description="Очистить сообщения в канале")
-@app_commands.describe(count="Количество сообщений")
-async def cleanup_command(interaction: discord.Interaction, count: int = 10):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    if count > 100:
-        await interaction.response.send_message("❌ Максимум 100 сообщений", ephemeral=True)
-        return
-    
-    try:
-        deleted = await interaction.channel.purge(limit=count)
-        await interaction.response.send_message(f"✅ Удалено {len(deleted)} сообщений", ephemeral=True)
-        db_add_log(interaction.user.id, interaction.user.id, "cleanup", f"Удалено {len(deleted)} сообщений")
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ===== КОМАНДА /SEND_RULES =====
-@bot.tree.command(name="send_rules", description="Отправить правила пользователю")
-@app_commands.describe(user="Пользователь", rule_numbers="Номера правил через запятую (например: 1,3,5)")
-async def send_rules_command(interaction: discord.Interaction, user: discord.Member, rule_numbers: str = None):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    if rule_numbers:
-        numbers = [r.strip() for r in rule_numbers.split(",")]
-        found = []
-        for num in numbers:
-            if num in RULES_DICT:
-                found.append(RULES_DICT[num])
-        if not found:
-            await interaction.response.send_message("❌ Правила не найдены", ephemeral=True)
-            return
-        
-        embed = discord.Embed(
-            title="📋 Правила",
-            description=f"{user.mention}\n\n" + "\n\n".join(found),
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(content=user.mention, embed=embed)
-    else:
-        embed = discord.Embed(
-            title="📋 Все правила сервера",
-            description="\n\n".join(RULES_DICT.values()),
-            color=discord.Color.gold()
-        )
-        await interaction.response.send_message(content=user.mention, embed=embed)
-    
-    db_add_log(user.id, interaction.user.id, "send_rules", f"Отправлены правила пользователю {user.name}")
-
-# ===== КОМАНДА /TOGGLE_ACCESS =====
-@bot.tree.command(name="toggle_access", description="Заблокировать/разблокировать доступ к командам")
-@app_commands.describe(user="Пользователь", duration="Время в минутах (опционально)")
-async def toggle_access_command(interaction: discord.Interaction, user: discord.Member, duration: int = None):
-    if interaction.user.id != AUTHORIZED_USER_ID:
-        await interaction.response.send_message("❌ Только владелец бота", ephemeral=True)
-        return
-    
-    if user.id == AUTHORIZED_USER_ID:
-        await interaction.response.send_message("❌ Нельзя заблокировать владельца", ephemeral=True)
-        return
-    
-    if db_is_access_banned(user.id):
-        db_remove_access_ban(user.id)
-        await interaction.response.send_message(f"✅ Доступ для {user.mention} восстановлен")
-    else:
-        db_toggle_access(user.id, duration)
-        if duration:
-            await interaction.response.send_message(f"✅ Доступ для {user.mention} заблокирован на {duration} минут")
-        else:
-            await interaction.response.send_message(f"✅ Доступ для {user.mention} заблокирован навсегда")
-
-# ===== КОМАНДА /WARN =====
-@bot.tree.command(name="warn", description="Выдать предупреждение пользователю")
-@app_commands.describe(user="Пользователь", reason="Причина")
-async def warn_command(interaction: discord.Interaction, user: discord.Member, reason: str = "Не указана"):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    db_add_warning(user.id, interaction.user.id, reason)
-    count = db_get_warning_count(user.id)
-    
-    await interaction.response.send_message(f"⚠️ {user.mention} получил предупреждение. Всего: {count}/{WARN_LIMIT}\nПричина: {reason}")
-    db_add_log(user.id, interaction.user.id, "warn", reason)
-    
-    if count >= WARN_LIMIT:
-        try:
-            await user.timeout(discord.utils.utcnow() + timedelta(minutes=WARN_TIMEOUT_MINUTES), reason="Превышен лимит предупреждений")
-            await interaction.channel.send(f"⏰ {user.mention} получил тайм-аут {WARN_TIMEOUT_MINUTES} мин за превышение лимита предупреждений")
-        except:
-            pass
-
-# ===== КОМАНДА /WARNS =====
-@bot.tree.command(name="warns", description="Показать предупреждения пользователя")
-@app_commands.describe(user="Пользователь")
-async def warns_command(interaction: discord.Interaction, user: discord.Member):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    warnings = db_get_warnings(user.id)
-    if not warnings:
-        await interaction.response.send_message(f"✅ У {user.mention} нет предупреждений", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title=f"⚠️ Предупреждения {user.name}",
-        color=discord.Color.orange()
-    )
-    for wid, mod_id, reason, created_at in warnings[:10]:
-        embed.add_field(
-            name=f"#{wid} от {created_at[:16]}",
-            value=f"Модератор: <@{mod_id}>\nПричина: {reason}",
-            inline=False
-        )
-    embed.set_footer(text=f"Всего: {len(warnings)}")
-    await interaction.response.send_message(embed=embed)
-
-# ===== КОМАНДА /UNWARN =====
-@bot.tree.command(name="unwarn", description="Снять последнее предупреждение")
-@app_commands.describe(user="Пользователь")
-async def unwarn_command(interaction: discord.Interaction, user: discord.Member):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    warnings = db_get_warnings(user.id)
-    if not warnings:
-        await interaction.response.send_message(f"❌ У {user.mention} нет предупреждений", ephemeral=True)
-        return
-    
-    db_remove_last_warning(user.id)
-    count = db_get_warning_count(user.id)
-    await interaction.response.send_message(f"✅ Снято последнее предупреждение у {user.mention}. Осталось: {count}")
-    db_add_log(user.id, interaction.user.id, "unwarn", f"Снято предупреждение")
-
-# ===== КОМАНДА /PROGRESS =====
-@bot.tree.command(name="progress", description="Переключить тикет в статус 'В работе'")
-async def progress(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-        return
-    
-    db_set_status(interaction.channel.id, "in_progress")
-    
-    async for msg in interaction.channel.history(limit=10):
-        if msg.author == bot.user and msg.embeds:
-            embed = msg.embeds[0]
-            new_embed = discord.Embed.from_dict(embed.to_dict())
-            desc = new_embed.description
-            if "🟢 ОТКРЫТ" in desc:
-                desc = desc.replace("🟢 ОТКРЫТ", "🟡 В РАБОТЕ")
-            new_embed.description = desc
-            new_embed.color = discord.Color.gold()
-            await msg.edit(embed=new_embed)
-            break
-    
-    await interaction.response.send_message(f"✅ {interaction.user.mention} взял тикет в работу!", ephemeral=False)
-
-# ===== КОМАНДА /RENAME =====
-@bot.tree.command(name="rename", description="Переименовать тикет")
-@app_commands.describe(new_name="Новое название тикета")
-async def rename(interaction: discord.Interaction, new_name: str):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-        return
-    
-    try:
-        await interaction.channel.edit(name=f"📩-{new_name[:40]}")
-        db_rename_ticket(interaction.channel.id, new_name)
-        await interaction.response.send_message(f"✅ Тикет переименован в: {new_name}", ephemeral=True)
-        db_add_log(interaction.user.id, interaction.user.id, "rename_ticket", f"Переименовал тикет в {new_name}")
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ===== КОМАНДА /TICKET_SEARCH =====
-@bot.tree.command(name="ticket_search", description="Поиск тикетов по пользователю")
-@app_commands.describe(user="Пользователь для поиска")
-async def ticket_search(interaction: discord.Interaction, user: discord.Member):
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    tickets = db_get_tickets_by_user(user.id)
-    if not tickets:
-        await interaction.response.send_message(f"❌ У {user.mention} нет тикетов", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title=f"📋 Тикеты пользователя {user.name}",
-        color=discord.Color.blue()
-    )
-    
-    for thread_id, ticket_type, subcategory, status, created_at in tickets[:10]:
-        status_emoji = "🟢" if status == "open" else "🟡" if status == "in_progress" else "🔴"
-        embed.add_field(
-            name=f"{status_emoji} {ticket_type}",
-            value=f"**Тема:** {subcategory}\n**Статус:** {status}\n**Создан:** {created_at[:16]}\n**Ветка:** <#{thread_id}>",
-            inline=False
-        )
-    
-    embed.set_footer(text=f"Всего: {len(tickets)} тикетов")
-    await interaction.response.send_message(embed=embed)
-
-# ===== КОМАНДА /CLOSE =====
-@bot.tree.command(name="close", description="Закрыть текущий тикет")
-async def close_command(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user) and ticket_owners[interaction.channel.id] != interaction.user.id:
-        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
-        return
-    
-    await interaction.response.send_message("✅ Закрываю...", ephemeral=True)
-    await close_ticket(interaction, interaction.channel.id)
-
-# ===== КОМАНДА /CLAIM =====
-@bot.tree.command(name="claim", description="Взять тикет в работу")
-async def claim_command(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-        return
-    
-    c.execute("UPDATE tickets SET assigned_mod_id=? WHERE thread_id=?", 
-              (str(interaction.user.id), str(interaction.channel.id)))
-    conn.commit()
-    
-    await interaction.response.send_message(f"✅ {interaction.user.mention} взял тикет в работу!", ephemeral=False)
-
-# ===== КОМАНДА /ADD_USER =====
-@bot.tree.command(name="add_user", description="Добавить пользователя в тикет")
-@app_commands.describe(user="Пользователь для добавления")
-async def add_user_command(interaction: discord.Interaction, user: discord.Member):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-        return
-    
-    try:
-        await interaction.channel.add_user(user)
-        await interaction.response.send_message(f"✅ {user.mention} добавлен в тикет", ephemeral=False)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ===== КОМАНДА /REMOVE_USER =====
-@bot.tree.command(name="remove_user", description="Удалить пользователя из тикета")
-@app_commands.describe(user="Пользователь для удаления")
-async def remove_user_command(interaction: discord.Interaction, user: discord.Member):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Только в тикете", ephemeral=True)
-        return
-    if interaction.channel.id not in ticket_owners:
-        await interaction.response.send_message("❌ Это не тикет", ephemeral=True)
-        return
-    if not is_moderator(interaction.user):
-        await interaction.response.send_message("❌ Только модераторы", ephemeral=True)
-        return
-    
-    try:
-        await interaction.channel.remove_user(user)
-        await interaction.response.send_message(f"✅ {user.mention} удалён из тикета", ephemeral=False)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ===== КОМАНДА /STATS =====
-@bot.tree.command(name="stats", description="Статистика тикетов")
-async def stats_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📊 Статистика тикетов",
-        description=(
-            f"**Создано:** {ticket_stats['created']}\n"
-            f"**Закрыто:** {ticket_stats['closed']}\n"
-            f"**Активно:** {len(ticket_owners)}\n"
-            f"**Uptime:** {str(datetime.now() - bot_start_time).split('.')[0]}"
-        ),
-        color=discord.Color.gold()
-    )
-    await interaction.response.send_message(embed=embed)
 
 # ========== СОБЫТИЯ ==========
 @bot.event
@@ -1282,7 +1164,6 @@ async def on_ready():
         if not channel:
             continue
         
-        # Проверяем, есть ли уже ветка в БД
         existing_thread_id = db_get_rules_thread(channel_id)
         
         if existing_thread_id:
@@ -1292,12 +1173,11 @@ async def on_ready():
                 print(f"✅ Ветка правил уже существует: {thread.name} (ID: {thread.id})")
                 continue
             else:
-                # Ветка удалена, удаляем запись из БД
                 c.execute("DELETE FROM rules_threads WHERE channel_id=?", (str(channel_id),))
                 conn.commit()
                 print(f"⚠️ Ветка правил не найдена, удаляем запись из БД")
         
-        # Удаляем все старые ветки с таким именем (на случай дубликатов)
+        # Удаляем все старые ветки с таким именем
         for thread in channel.threads:
             if thread.name == "📋-правила-поддержки":
                 try:
@@ -1306,7 +1186,6 @@ async def on_ready():
                 except:
                     pass
         
-        # Создаём новую ветку
         try:
             thread = await channel.create_thread(
                 name="📋-правила-поддержки",
@@ -1332,6 +1211,7 @@ async def on_ready():
     
     print("🚀 Бот готов к работе!")
 
+# ===== ДОБАВЛЕНО: ОБРАБОТКА УДАЛЕНИЯ ВЕТКИ =====
 @bot.event
 async def on_thread_delete(thread):
     if thread.id in ticket_owners:
@@ -1342,6 +1222,7 @@ async def on_thread_delete(thread):
         ticket_creation_time.pop(thread.id, None)
         ticket_closed.add(thread.id)
 
+# ===== ДОБАВЛЕНО: АВТООБНОВЛЕНИЕ АКТИВНОСТИ =====
 @bot.event
 async def on_message(message):
     if message.guild and message.channel.id in ticket_owners:
