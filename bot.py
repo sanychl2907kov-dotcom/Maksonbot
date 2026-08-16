@@ -816,7 +816,7 @@ class PinButton(Button):
 
 # ========== КОМАНДЫ ==========
 
-# ===== ГЛАВНАЯ КОМАНДА /SETUP_TICKETS =====
+# ===== КОМАНДА /SETUP_TICKETS (ГЛАВНАЯ) =====
 @bot.tree.command(name="setup_tickets", description="Настроить панель для создания тикетов")
 @app_commands.default_permissions(administrator=True)
 async def setup_tickets(interaction: discord.Interaction):
