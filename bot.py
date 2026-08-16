@@ -41,7 +41,7 @@ MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
 GUILD_ID = 580351461180047379
-ALLOWED_CHANNELS = [1478737906028908757]  # УДАЛИЛ ФЕЙКОВЫЙ ID
+ALLOWED_CHANNELS = [1478737906028908757]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -125,7 +125,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS warnings (
 )''')
 conn.commit()
 
-# ===== ДОПОЛНЕННЫЕ БД ФУНКЦИИ =====
+# ===== БД ФУНКЦИИ =====
 def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason="", assigned_mod_id=None, voice_channel_id=None):
     c.execute('''INSERT OR IGNORE INTO tickets 
         (thread_id, user_id, user_name, ticket_type, subcategory, reason, assigned_mod_id, created_at, status, last_activity, voice_channel_id)
@@ -574,7 +574,6 @@ class SubButton(Button):
                 await i.followup.send("❌ Не тот канал", ephemeral=True)
                 return
             
-            # ===== ИСПРАВЛЕНА ПРОВЕРКА НА ДУБЛИКАТ (по user_id) =====
             uid = i.user.id
             user_tickets = sum(1 for tid, owner_id in ticket_owners.items() if owner_id == uid)
             if user_tickets >= MAX_TICKETS_PER_USER:
@@ -599,7 +598,6 @@ class SubButton(Button):
             
             await t.edit(archived=False, locked=False)
             
-            # ===== ИСПРАВЛЕНО: передаём thread.id =====
             await create_voice_channel_for_thread(i, t.id, name)
             await safe_add_user(t, i.user)
             
@@ -708,7 +706,6 @@ async def safe_add_user(thread, user):
     except:
         pass
 
-# ===== ИСПРАВЛЕНА ФУНКЦИЯ СОЗДАНИЯ ГОЛОСОВОГО КАНАЛА =====
 async def create_voice_channel_for_thread(interaction, thread_id, thread_name):
     try:
         if not interaction.guild:
@@ -719,7 +716,6 @@ async def create_voice_channel_for_thread(interaction, thread_id, thread_name):
         if not category:
             return
         
-        # Проверяем, есть ли уже голосовой канал для этого тикета
         existing_vc = db_get_voice_channel(thread_id)
         if existing_vc:
             vc = interaction.guild.get_channel(existing_vc)
@@ -754,7 +750,6 @@ async def delete_voice_channel(guild, thread_id, thread_name):
     c.execute("UPDATE tickets SET voice_channel_id=NULL WHERE thread_id=?", (str(thread_id),))
     conn.commit()
     
-    # Очистка по имени
     for vc in guild.voice_channels:
         if thread_name[:80] in vc.name and "🔊" in vc.name:
             try:
@@ -1109,17 +1104,17 @@ async def commands_cmd(i: discord.Interaction):
 )
 @app_commands.describe(text="Текст, который будет подставлен после ника")
 async def who_cmd(i: discord.Interaction, text: str):
+    await i.response.defer(ephemeral=False)
     if i.channel.id not in ALLOWED_CHANNELS:
-        await i.response.send_message(f"❌ Эта команда работает только в разрешённых каналах.", ephemeral=True)
+        await i.followup.send(f"❌ Эта команда работает только в разрешённых каналах.")
         return
     
-    await i.response.defer(ephemeral=False)
     try:
         members = get_cached_members(i.guild)
         available = [m for m in members if m.id != i.user.id and m.id != bot.user.id]
         
         if not available:
-            await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
+            await i.followup.send("❌ Нет доступных участников для выбора.")
             return
         
         chosen = random.choice(available)
@@ -1134,7 +1129,7 @@ async def who_cmd(i: discord.Interaction, text: str):
         await i.followup.send(embed=embed)
         
     except Exception as e:
-        await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+        await i.followup.send(f"❌ Ошибка: {e}")
         log_error(e, "who_cmd")
 
 @bot.tree.command(name="sync", description="Синхронизировать команды бота (только владелец)")
@@ -1234,7 +1229,6 @@ async def check_inactive_tickets():
         except Exception as e:
             log_error(e, f"check_inactive: {thread_id}")
 
-# ========== ДОБАВЛЕНА ФУНКЦИЯ ЗАГРУЗКИ ГОЛОСОВЫХ КАНАЛОВ ==========
 def load_voice_channels_from_db():
     c.execute("SELECT thread_id, voice_channel_id FROM tickets WHERE status='open' AND voice_channel_id IS NOT NULL")
     rows = c.fetchall()
@@ -1251,10 +1245,9 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты"))
     print("✅ Статус установлен: 'Смотрит тикеты'")
     
-    # ===== ЗАГРУЗКА ГОЛОСОВЫХ КАНАЛОВ ИЗ БД =====
     load_voice_channels_from_db()
     
-    # ===== АВТОМАТИЧЕСКОЕ СОЗДАНИЕ ВЕТКИ ПРАВИЛ =====
+    # Автоматическое создание ветки правил
     for channel_id in SUPPORT_CHANNEL_IDS:
         channel = bot.get_channel(channel_id)
         if not channel:
@@ -1273,7 +1266,6 @@ async def on_ready():
                 conn.commit()
                 print(f"⚠️ Ветка правил не найдена, удаляем запись из БД")
         
-        # Удаляем старые ветки с таким именем
         for thread in channel.threads:
             if thread.name == "📋-правила-поддержки":
                 try:
@@ -1308,7 +1300,6 @@ async def on_ready():
     check_inactive_tickets.start()
     await bot.wait_until_ready()
     
-    # ===== СИНХРОНИЗАЦИЯ ДЛЯ ГИЛЬДА =====
     try:
         guild = bot.get_guild(GUILD_ID)
         if guild:
@@ -1321,20 +1312,17 @@ async def on_ready():
     except Exception as e:
         log_error(e, "sync")
     
-    # Восстановление голосовых каналов в памяти
     for thread_id in list(ticket_owners.keys()):
         thread = bot.get_channel(thread_id)
         if not thread:
             ticket_owners.pop(thread_id, None)
             continue
-        # Проверяем, есть ли голосовой канал
         vc_id = db_get_voice_channel(thread_id)
         if vc_id:
             vc = thread.guild.get_channel(vc_id)
             if vc:
                 voice_channels[thread_id] = vc_id
     
-    # Предзагрузка кэша
     for g in bot.guilds:
         get_cached_members(g)
     
@@ -1348,7 +1336,6 @@ async def on_member_join(member):
 async def on_member_remove(member):
     invalidate_members_cache(member.guild.id)
 
-# ===== ДОБАВЛЕНА ОБРАБОТКА УДАЛЕНИЯ ВЕТКИ =====
 @bot.event
 async def on_thread_delete(thread):
     if thread.id in ticket_owners:
