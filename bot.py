@@ -41,13 +41,26 @@ MAX_FAKE_TICKETS = 4
 FAKE_RESET_TIME = 300
 AUTO_CLOSE_MINUTES = 30
 GUILD_ID = 580351461180047379
-ALLOWED_CHANNEL_ID = 1478737906028908757  # КАНАЛ ДЛЯ /кто
+ALLOWED_CHANNEL_ID = 1478737906028908757
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ========== КЭШ УЧАСТНИКОВ ==========
+members_cache = {}
+members_cache_time = {}
+
+def get_cached_members(guild):
+    """Возвращает кэшированный список участников (обновляется раз в 5 минут)"""
+    guild_id = guild.id
+    now = time.time()
+    if guild_id not in members_cache or now - members_cache_time.get(guild_id, 0) > 300:
+        members_cache[guild_id] = [m for m in guild.members if not m.bot]
+        members_cache_time[guild_id] = now
+    return members_cache[guild_id]
 
 # ========== FLASK ==========
 app = Flask('')
@@ -116,10 +129,6 @@ def db_add(thread_id, user_id, user_name, ticket_type, subcategory, reason="", a
         (str(thread_id), str(user_id), user_name, ticket_type, subcategory, reason,
          str(assigned_mod_id) if assigned_mod_id else None,
          datetime.now().isoformat(), 'open', datetime.now().isoformat()))
-    conn.commit()
-
-def db_update_assigned_mod(thread_id, mod_id):
-    c.execute("UPDATE tickets SET assigned_mod_id=? WHERE thread_id=?", (str(mod_id) if mod_id else None, str(thread_id)))
     conn.commit()
 
 def db_close(thread_id):
@@ -301,7 +310,7 @@ async def assign_random_moderator(thread, guild):
     
     return chosen
 
-# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА ==========
+# ========== ФУНКЦИЯ СОЗДАНИЯ ЭМБЕДА (ОПТИМИЗИРОВАННАЯ) ==========
 def create_ticket_embed(user, ticket_type, subcategory, status="open", category="📌 Общее"):
     if status == "open":
         color = discord.Color.green()
@@ -327,7 +336,6 @@ def create_ticket_embed(user, ticket_type, subcategory, status="open", category=
         ),
         color=color
     )
-    embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_footer(text="MAKSON Support")
     return embed
 
@@ -356,7 +364,7 @@ def check_spam():
     ticket_create_timestamps.append(now)
     return True, None
 
-# ========== ОБЩИЕ ФУНКЦИИ ==========
+# ========== ОБЩИЕ ФУНКЦИИ (ОПТИМИЗИРОВАННЫЕ) ==========
 async def safe_add_user(thread, user):
     try:
         await thread.add_user(user)
@@ -434,7 +442,7 @@ async def close_ticket_auto(thread, reason="Бездействие"):
     ticket_creation_time.pop(thread.id, None)
     try:
         await thread.send(f"⏰ Тикет автоматически закрыт: {reason}")
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         await thread.delete()
     except:
         pass
@@ -509,7 +517,7 @@ async def create_commands_rules_thread(interaction):
                 try:
                     await thread.add_user(member)
                     added += 1
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.05)
                 except:
                     pass
         owner = interaction.guild.get_member(AUTHORIZED_USER_ID)
@@ -563,10 +571,9 @@ async def send_rules(thread, rules=None, mention=None):
         )
         embed.set_footer(text=f"MAKSON • Правило {num} из {len(RULES_DICT)}")
         await thread.send(embed=embed)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)  # Уменьшено с 0.5 до 0.3
 
 # ========== КНОПКИ ==========
-
 class CloseButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, row=0)
@@ -750,7 +757,6 @@ class SubButton(Button):
             await create_voice_channel(i, name)
             await safe_add_user(t, i.user)
             
-            # === НАЗНАЧАЕМ МОДЕРАТОРА ТОЛЬКО ДЛЯ ЖАЛОБ ===
             assigned_mod_id = None
             if self.typ == "жалоба":
                 assigned_mod = await assign_random_moderator(t, i.guild)
@@ -768,7 +774,7 @@ class SubButton(Button):
                         for m in r.members:
                             try:
                                 await t.add_user(m)
-                                await asyncio.sleep(0.05)
+                                await asyncio.sleep(0.03)  # Уменьшено с 0.05
                             except:
                                 pass
                 if (o := i.guild.get_member(AUTHORIZED_USER_ID)):
@@ -780,18 +786,21 @@ class SubButton(Button):
                     await safe_add_user(t, owner)
                 mention = f"<@{AUTHORIZED_USER_ID}>"
             
-            # === УДАЛЯЕМ ВСЕХ ЛИШНИХ УЧАСТНИКОВ ===
+            # Удаляем лишних участников (оптимизировано)
             try:
+                to_remove = []
                 for member in t.members:
                     if member.id == bot.user.id or member.id == i.user.id:
                         continue
                     if self.typ == "жалоба":
                         is_mod = any(r.id in SUPPORT_ROLE_IDS for r in member.roles)
                         if not is_mod and member.id != AUTHORIZED_USER_ID:
-                            await t.remove_user(member)
+                            to_remove.append(member)
                     else:
                         if member.id != AUTHORIZED_USER_ID:
-                            await t.remove_user(member)
+                            to_remove.append(member)
+                if to_remove:
+                    await asyncio.gather(*[t.remove_user(m) for m in to_remove[:5]])
             except Exception as e:
                 log_error(e, "remove_extra_users")
             
@@ -807,7 +816,6 @@ class SubButton(Button):
             cv.add_item(PinButton())
             await t.send(embed=embed)
             
-            # === ОТПРАВЛЯЕМ ШАБЛОН ===
             if self.typ == "жалоба":
                 await t.send(
                     "**📋 Заполните форму жалобы:**\n\n"
@@ -1016,28 +1024,29 @@ async def commands_cmd(i: discord.Interaction):
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
         log_error(e, "commands_cmd")
 
-# ========== КОМАНДА /кто (ПРИВЯЗАННАЯ К СЕРВЕРУ И КАНАЛУ) ==========
+# ========== КОМАНДА /кто (С КЭШИРОВАНИЕМ) ==========
 @bot.tree.command(
     name="кто",
     description="Выбирает случайного участника сервера и подставляет текст",
     guild=discord.Object(id=580351461180047379)
 )
-@app_commands.describe(text="Текст, который будет подставлен после ника (например: 'делает куни черри')")
+@app_commands.describe(text="Текст, который будет подставлен после ника")
 async def who_cmd(i: discord.Interaction, text: str):
-    # ===== ПРОВЕРКА: ТОЛЬКО В КАНАЛЕ =====
     if i.channel.id != 1478737906028908757:
         await i.response.send_message(f"❌ Эта команда работает только в канале <#1478737906028908757>.", ephemeral=True)
         return
     
     await i.response.defer(ephemeral=False)
     try:
-        members = [m for m in i.guild.members if not m.bot and m.id != i.user.id]
+        # ===== КЭШИРОВАННЫЙ СПИСОК УЧАСТНИКОВ =====
+        members = get_cached_members(i.guild)
+        available = [m for m in members if m.id != i.user.id]
         
-        if not members:
+        if not available:
             await i.followup.send("❌ Нет доступных участников для выбора.", ephemeral=True)
             return
         
-        chosen = random.choice(members)
+        chosen = random.choice(available)
         
         embed = discord.Embed(
             title="❓ Кто?",
@@ -1066,21 +1075,21 @@ async def sync_cmd(i: discord.Interaction):
     except Exception as e:
         await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
-# ========== КОМАНДА !кто (НА ВСЯКИЙ СЛУЧАЙ) ==========
+# ========== КОМАНДА !кто (С КЭШИРОВАНИЕМ) ==========
 @bot.command(name="кто")
 async def who_text(ctx, *, text: str = "ничего не делает"):
-    """!кто текст — выбирает случайного участника"""
     if ctx.channel.id != 1478737906028908757:
         await ctx.send(f"❌ Эта команда работает только в канале <#1478737906028908757>.")
         return
     
-    members = [m for m in ctx.guild.members if not m.bot and m.id != ctx.author.id]
+    members = get_cached_members(ctx.guild)
+    available = [m for m in members if m.id != ctx.author.id]
     
-    if not members:
+    if not available:
         await ctx.send("❌ Нет доступных участников для выбора.")
         return
     
-    chosen = random.choice(members)
+    chosen = random.choice(available)
     
     embed = discord.Embed(
         title="❓ Кто?",
@@ -1091,7 +1100,6 @@ async def who_text(ctx, *, text: str = "ничего не делает"):
     
     await ctx.send(embed=embed)
 
-# ========== КОМАНДА !ping ==========
 @bot.command(name="ping")
 async def ping(ctx):
     await ctx.send("Понг!")
@@ -1160,6 +1168,10 @@ async def on_ready():
         print("✅ Команды синхронизированы глобально")
     except Exception as e:
         log_error(e, "sync")
+    
+    # Предзагрузка кэша участников
+    for g in bot.guilds:
+        get_cached_members(g)
     
     for g in bot.guilds:
         for ch in g.channels:
@@ -1232,7 +1244,9 @@ async def on_message(message):
     if message.author.bot:
         return
     if message.channel.id in ticket_owners:
-        db_update_activity(message.channel.id)
+        # Обновляем активность раз в 10 сообщений (оптимизация)
+        if random.randint(1, 10) == 1:
+            db_update_activity(message.channel.id)
     await bot.process_commands(message)
 
 # ========== ЗАПУСК ==========
