@@ -124,7 +124,6 @@ threading.Timer(1.0, start_flask).start()
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 c = conn.cursor()
 
-# ===== ДОБАВЛЕНО: voice_channel_id в таблицу tickets =====
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT UNIQUE, user_id TEXT, user_name TEXT,
@@ -250,7 +249,7 @@ COMMANDS_RULES_THREAD_ID = None
 ticket_stats = {"created": 0, "closed": 0}
 bot_start_time = datetime.now()
 
-# ========== ПРАВИЛА ==========
+# ========== ПРАВИЛА (ПОЛНЫЙ СПИСОК) ==========
 COMMANDS_RULES_TEXT = (
     "**🔒 Правила для администрации**\n\n"
     "**1. `/timeout`**\n"
@@ -815,8 +814,30 @@ class PinButton(Button):
                 pass
             log_error(e, "PinButton")
 
-# ========== КОМАНДЫ (ВАШИ СТАРЫЕ) ==========
+# ========== КОМАНДЫ ==========
 
+# ===== ГЛАВНАЯ КОМАНДА /SETUP_TICKETS =====
+@bot.tree.command(name="setup_tickets", description="Настроить панель для создания тикетов")
+@app_commands.default_permissions(administrator=True)
+async def setup_tickets(interaction: discord.Interaction):
+    if not is_moderator(interaction.user):
+        await interaction.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎫 Создание тикета",
+        description="Нажми на кнопку ниже, чтобы открыть тикет.\n"
+                    "Выбери категорию и опиши проблему.",
+        color=discord.Color.gold()
+    )
+
+    view = View(timeout=None)
+    view.add_item(Button(label="📩 Создать тикет", style=discord.ButtonStyle.primary, custom_id="create_ticket"))
+
+    await interaction.response.send_message(embed=embed, view=view)
+    db_add_log(interaction.user.id, interaction.user.id, "setup_tickets", "Создана панель тикетов")
+
+# ===== КОМАНДА /PANEL =====
 @bot.tree.command(name="panel", description="Создать панель для тикетов")
 @app_commands.default_permissions(administrator=True)
 async def panel(interaction: discord.Interaction):
@@ -836,6 +857,7 @@ async def panel(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, view=view)
 
+# ===== КОМАНДА /TIMEOUT =====
 @bot.tree.command(name="timeout", description="Выдать тайм-аут пользователю")
 @app_commands.describe(user="Пользователь", duration="Время в минутах", reason="Причина")
 async def timeout_command(interaction: discord.Interaction, user: discord.Member, duration: int, reason: str = "Не указана"):
@@ -859,6 +881,7 @@ async def timeout_command(interaction: discord.Interaction, user: discord.Member
     except Exception as e:
         await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+# ===== КОМАНДА /CLEANUP =====
 @bot.tree.command(name="cleanup", description="Очистить сообщения в канале")
 @app_commands.describe(count="Количество сообщений")
 async def cleanup_command(interaction: discord.Interaction, count: int = 10):
@@ -876,6 +899,7 @@ async def cleanup_command(interaction: discord.Interaction, count: int = 10):
     except Exception as e:
         await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+# ===== КОМАНДА /SEND_RULES =====
 @bot.tree.command(name="send_rules", description="Отправить правила пользователю")
 @app_commands.describe(user="Пользователь", rule_numbers="Номера правил через запятую (например: 1,3,5)")
 async def send_rules_command(interaction: discord.Interaction, user: discord.Member, rule_numbers: str = None):
@@ -909,6 +933,7 @@ async def send_rules_command(interaction: discord.Interaction, user: discord.Mem
     
     db_add_log(user.id, interaction.user.id, "send_rules", f"Отправлены правила пользователю {user.name}")
 
+# ===== КОМАНДА /TOGGLE_ACCESS =====
 @bot.tree.command(name="toggle_access", description="Заблокировать/разблокировать доступ к командам")
 @app_commands.describe(user="Пользователь", duration="Время в минутах (опционально)")
 async def toggle_access_command(interaction: discord.Interaction, user: discord.Member, duration: int = None):
@@ -930,6 +955,7 @@ async def toggle_access_command(interaction: discord.Interaction, user: discord.
         else:
             await interaction.response.send_message(f"✅ Доступ для {user.mention} заблокирован навсегда")
 
+# ===== КОМАНДА /WARN =====
 @bot.tree.command(name="warn", description="Выдать предупреждение пользователю")
 @app_commands.describe(user="Пользователь", reason="Причина")
 async def warn_command(interaction: discord.Interaction, user: discord.Member, reason: str = "Не указана"):
@@ -950,6 +976,7 @@ async def warn_command(interaction: discord.Interaction, user: discord.Member, r
         except:
             pass
 
+# ===== КОМАНДА /WARNS =====
 @bot.tree.command(name="warns", description="Показать предупреждения пользователя")
 @app_commands.describe(user="Пользователь")
 async def warns_command(interaction: discord.Interaction, user: discord.Member):
@@ -975,6 +1002,7 @@ async def warns_command(interaction: discord.Interaction, user: discord.Member):
     embed.set_footer(text=f"Всего: {len(warnings)}")
     await interaction.response.send_message(embed=embed)
 
+# ===== КОМАНДА /UNWARN =====
 @bot.tree.command(name="unwarn", description="Снять последнее предупреждение")
 @app_commands.describe(user="Пользователь")
 async def unwarn_command(interaction: discord.Interaction, user: discord.Member):
@@ -1059,7 +1087,6 @@ async def create_ticket_from_modal(interaction: discord.Interaction, ticket_type
     guild = interaction.guild
     channel = interaction.channel
 
-    # Проверка на дубликат
     for tid, uid in ticket_owners.items():
         if uid == user.id:
             thread = guild.get_thread(tid)
@@ -1177,7 +1204,6 @@ async def on_ready():
                 conn.commit()
                 print(f"⚠️ Ветка правил не найдена, удаляем запись из БД")
         
-        # Удаляем все старые ветки с таким именем
         for thread in channel.threads:
             if thread.name == "📋-правила-поддержки":
                 try:
@@ -1211,7 +1237,6 @@ async def on_ready():
     
     print("🚀 Бот готов к работе!")
 
-# ===== ДОБАВЛЕНО: ОБРАБОТКА УДАЛЕНИЯ ВЕТКИ =====
 @bot.event
 async def on_thread_delete(thread):
     if thread.id in ticket_owners:
@@ -1222,7 +1247,6 @@ async def on_thread_delete(thread):
         ticket_creation_time.pop(thread.id, None)
         ticket_closed.add(thread.id)
 
-# ===== ДОБАВЛЕНО: АВТООБНОВЛЕНИЕ АКТИВНОСТИ =====
 @bot.event
 async def on_message(message):
     if message.guild and message.channel.id in ticket_owners:
