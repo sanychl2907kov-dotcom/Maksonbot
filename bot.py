@@ -31,9 +31,11 @@ def log_error(e, ctx=""):
     log.error(f"{ctx}: {e}")
 
 load_dotenv()
-TOKEN = os.getenv("TOKEN")
+
+# ===== ПОДДЕРЖКА ОБОИХ ИМЁН ПЕРЕМЕННЫХ =====
+TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("Токен не найден")
+    raise ValueError("Токен не найден! Проверь переменные окружения.")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_AVAILABLE and OPENAI_API_KEY:
@@ -816,7 +818,7 @@ class PinButton(Button):
 
 # ========== КОМАНДЫ ==========
 
-# ===== КОМАНДА /SETUP_TICKETS (ГЛАВНАЯ) =====
+# ===== ГЛАВНАЯ КОМАНДА /SETUP_TICKETS =====
 @bot.tree.command(name="setup_tickets", description="Настроить панель для создания тикетов")
 @app_commands.default_permissions(administrator=True)
 async def setup_tickets(interaction: discord.Interaction):
