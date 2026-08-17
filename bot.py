@@ -132,108 +132,7 @@ app = Flask('')
 def home(): return "Бот MAKSON работает!"
 threading.Thread(target=lambda: app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False), daemon=True).start()
 
-# ========== КНОПКИ ==========
-class IdeaButton(Button):
-    def __init__(self):
-        super().__init__(label="💡 Предложить идею", style=discord.ButtonStyle.primary)
-
-    async def callback(self, i: discord.Interaction):
-        if not db_check_cooldown(i.user.id):
-            await i.response.send_message("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
-            return
-        modal = Modal(title="Новая идея")
-        modal.add_item(TextInput(label="Название идеи", placeholder="Краткое название", required=True, max_length=50))
-        modal.add_item(TextInput(label="Описание", placeholder="Подробно опиши свою идею", required=True, style=discord.TextStyle.paragraph, max_length=500))
-        await i.response.send_modal(modal)
-
-class AllIdeasButton(Button):
-    def __init__(self):
-        super().__init__(label="📋 Все идеи", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        ideas = db_get_all_ideas()
-        if not ideas:
-            await i.followup.send("📭 Пока нет идей. Будь первым!", ephemeral=True)
-            return
-        embed = discord.Embed(
-            title="📋 Все идеи",
-            description="Топ идей с наибольшим рейтингом",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="MAKSON Project • Идеи сообщества")
-        for thread_id, author_id, author_name, title, votes_up, votes_down in ideas[:10]:
-            rating = votes_up - votes_down
-            embed.add_field(
-                name=f"{'⭐' if rating > 0 else '📌'} {title}",
-                value=f"**Автор:** {author_name}\n**Рейтинг:** +{votes_up} / -{votes_down}\n[Перейти](https://discord.com/channels/{GUILD_ID}/{thread_id})",
-                inline=False
-            )
-        await i.followup.send(embed=embed, ephemeral=True)
-
-class VoteUpButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="👍 За", style=discord.ButtonStyle.success)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        status = db_get_vote_status(self.thread_id, i.user.id)
-        if status == "up":
-            await i.followup.send("❌ Ты уже голосовал ЗА эту идею", ephemeral=True)
-            return
-        if db_add_vote(self.thread_id, i.user.id, "up"):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Твой голос ЗА учтён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ошибка", ephemeral=True)
-
-class VoteDownButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="👎 Против", style=discord.ButtonStyle.danger)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        status = db_get_vote_status(self.thread_id, i.user.id)
-        if status == "down":
-            await i.followup.send("❌ Ты уже голосовал ПРОТИВ этой идеи", ephemeral=True)
-            return
-        if db_add_vote(self.thread_id, i.user.id, "down"):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Твой голос ПРОТИВ учтён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ошибка", ephemeral=True)
-
-class UnvoteButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="↩️ Отменить голос", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        if db_remove_vote(self.thread_id, i.user.id):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Голос отменён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ты не голосовал за эту идею", ephemeral=True)
-
-class CloseIdeaButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="🔒 Закрыть идею", style=discord.ButtonStyle.danger)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        if not any(r.id in MOD_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
-            await i.followup.send("❌ Только модераторы", ephemeral=True)
-            return
-        await i.followup.send("✅ Идея закрыта", ephemeral=True)
-        try:
-            await i.channel.delete()
-        except:
-            pass
-
-# ========== ФУНКЦИИ ==========
+# ========== ФУНКЦИЯ ОБНОВЛЕНИЯ EMBED ==========
 async def update_idea_embed(thread, thread_id):
     idea = db_get_idea(thread_id)
     if not idea:
@@ -268,42 +167,153 @@ async def update_idea_embed(thread, thread_id):
     
     await thread.send(embed=embed, view=view)
 
-# ========== ОБРАБОТЧИК МОДАЛА ==========
-@bot.event
-async def on_modal_submit(i: discord.Interaction):
-    if i.data.get("title") == "Новая идея":
-        await i.response.defer(ephemeral=True)
-        
-        title = i.data["components"][0]["components"][0]["value"]
-        description = i.data["components"][1]["components"][0]["value"]
-        
+# ========== КНОПКИ ==========
+class IdeaButton(Button):
+    def __init__(self):
+        super().__init__(label="💡 Предложить идею", style=discord.ButtonStyle.primary)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
         if not db_check_cooldown(i.user.id):
             await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
             return
+        modal = Modal(title="Новая идея")
+        modal.add_item(TextInput(label="Название идеи", placeholder="Краткое название", required=True, max_length=50))
+        modal.add_item(TextInput(label="Описание", placeholder="Подробно опиши свою идею", required=True, style=discord.TextStyle.paragraph, max_length=500))
+        await i.response.send_modal(modal)  # Здесь НЕ defer, это особенность модальных окон
+
+class AllIdeasButton(Button):
+    def __init__(self):
+        super().__init__(label="📋 Все идеи", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
+        ideas = db_get_all_ideas()
+        if not ideas:
+            await i.followup.send("📭 Пока нет идей. Будь первым!", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="📋 Все идеи",
+            description="Топ идей с наибольшим рейтингом",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="MAKSON Project • Идеи сообщества")
+        for thread_id, author_id, author_name, title, votes_up, votes_down in ideas[:10]:
+            rating = votes_up - votes_down
+            embed.add_field(
+                name=f"{'⭐' if rating > 0 else '📌'} {title}",
+                value=f"**Автор:** {author_name}\n**Рейтинг:** +{votes_up} / -{votes_down}\n[Перейти](https://discord.com/channels/{GUILD_ID}/{thread_id})",
+                inline=False
+            )
+        await i.followup.send(embed=embed, ephemeral=True)
+
+class VoteUpButton(Button):
+    def __init__(self, thread_id):
+        super().__init__(label="👍 За", style=discord.ButtonStyle.success)
+        self.thread_id = thread_id
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
+        status = db_get_vote_status(self.thread_id, i.user.id)
+        if status == "up":
+            await i.followup.send("❌ Ты уже голосовал ЗА эту идею", ephemeral=True)
+            return
+        if db_add_vote(self.thread_id, i.user.id, "up"):
+            await update_idea_embed(i.channel, self.thread_id)
+            await i.followup.send("✅ Твой голос ЗА учтён!", ephemeral=True)
+        else:
+            await i.followup.send("❌ Ошибка", ephemeral=True)
+
+class VoteDownButton(Button):
+    def __init__(self, thread_id):
+        super().__init__(label="👎 Против", style=discord.ButtonStyle.danger)
+        self.thread_id = thread_id
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
+        status = db_get_vote_status(self.thread_id, i.user.id)
+        if status == "down":
+            await i.followup.send("❌ Ты уже голосовал ПРОТИВ этой идеи", ephemeral=True)
+            return
+        if db_add_vote(self.thread_id, i.user.id, "down"):
+            await update_idea_embed(i.channel, self.thread_id)
+            await i.followup.send("✅ Твой голос ПРОТИВ учтён!", ephemeral=True)
+        else:
+            await i.followup.send("❌ Ошибка", ephemeral=True)
+
+class UnvoteButton(Button):
+    def __init__(self, thread_id):
+        super().__init__(label="↩️ Отменить голос", style=discord.ButtonStyle.secondary)
+        self.thread_id = thread_id
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
+        if db_remove_vote(self.thread_id, i.user.id):
+            await update_idea_embed(i.channel, self.thread_id)
+            await i.followup.send("✅ Голос отменён!", ephemeral=True)
+        else:
+            await i.followup.send("❌ Ты не голосовал за эту идею", ephemeral=True)
+
+class CloseIdeaButton(Button):
+    def __init__(self, thread_id):
+        super().__init__(label="🔒 Закрыть идею", style=discord.ButtonStyle.danger)
+        self.thread_id = thread_id
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)  # ✅ defer
+        if not any(r.id in MOD_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
+            await i.followup.send("❌ Только модераторы", ephemeral=True)
+            return
+        await i.followup.send("✅ Идея закрыта", ephemeral=True)
+        try:
+            await i.channel.delete()
+        except:
+            pass
+
+# ========== ОБРАБОТЧИК МОДАЛЬНОГО ОКНА ==========
+@bot.event
+async def on_modal_submit(i: discord.Interaction):
+    if i.data.get("title") == "Новая идея":
+        await i.response.defer(ephemeral=True)  # ✅ defer
         
         try:
-            thread = await i.channel.create_thread(
-                name=f"💡-{title[:40]}",
-                auto_archive_duration=1440,
-                type=discord.ChannelType.public_thread,
-                reason=f"Идея от {i.user}"
-            )
+            title = i.data["components"][0]["components"][0]["value"]
+            description = i.data["components"][1]["components"][0]["value"]
+            
+            if not db_check_cooldown(i.user.id):
+                await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
+                return
+            
+            if i.channel.id != IDEAS_CHANNEL_ID:
+                await i.followup.send("❌ Этот канал не предназначен для идей!", ephemeral=True)
+                return
+            
+            try:
+                thread = await i.channel.create_thread(
+                    name=f"💡-{title[:40]}",
+                    auto_archive_duration=1440,
+                    type=discord.ChannelType.public_thread,
+                    reason=f"Идея от {i.user}"
+                )
+            except Exception as e:
+                await i.followup.send(f"❌ Ошибка создания ветки: {e}", ephemeral=True)
+                return
+            
+            db_add_idea(thread.id, i.user.id, i.user.name, title, description)
+            db_set_cooldown(i.user.id)
+            
+            await update_idea_embed(thread, thread.id)
+            
+            await i.followup.send(f"✅ Идея создана: {thread.mention}", ephemeral=True)
+            
         except Exception as e:
             await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-            return
-        
-        db_add_idea(thread.id, i.user.id, i.user.name, title, description)
-        db_set_cooldown(i.user.id)
-        
-        await update_idea_embed(thread, thread.id)
-        
-        await i.followup.send(f"✅ Идея создана: {thread.mention}", ephemeral=True)
 
 # ========== КОМАНДЫ ==========
 
 @bot.tree.command(name="setup_ideas", description="Создать панель для идей")
 async def setup_ideas(i: discord.Interaction):
-    await i.response.defer()
+    await i.response.defer()  # ✅ defer
     if i.user.id != AUTHORIZED_USER_ID and not any(r.id in MOD_ROLE_IDS for r in i.user.roles):
         await i.followup.send("❌ Нет доступа")
         return
@@ -334,7 +344,7 @@ async def sync_cmd(i: discord.Interaction):
     if i.user.id != AUTHORIZED_USER_ID:
         await i.response.send_message("❌ Нет прав", ephemeral=True)
         return
-    await i.response.defer(ephemeral=True)
+    await i.response.defer(ephemeral=True)  # ✅ defer
     guild = bot.get_guild(GUILD_ID)
     if guild:
         bot.tree.copy_global_to(guild=guild)
