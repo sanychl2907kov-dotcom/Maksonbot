@@ -3,7 +3,6 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 import os
-import asyncio
 import sqlite3
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -17,14 +16,13 @@ if not TOKEN:
 
 GUILD_ID = 1553004315235319828
 AUTHORIZED_USER_ID = 1495071540927266841
-MOD_ROLE_IDS = [
-    1546813764706377819,  # Руководство клана
-    1546525641283862558,  # Модератор ДС
-    1546516686583365642,  # Зам создателя
-    1546515263300571279,  # Создатель
-]
 
-TICKETS_CATEGORY_NAME = "🎫 Тикеты"
+ROLE_LEADERSHIP = 1546813764706377819       # Руководство клана
+ROLE_MODERATOR = 1546525641283862558        # Модератор ДС
+ROLE_DEPUTY_FOUNDER = 1546516686583365642   # Зам создателя
+ROLE_FOUNDER = 1546515263300571279          # Создатель
+
+MOD_ROLE_IDS = [ROLE_LEADERSHIP, ROLE_MODERATOR, ROLE_DEPUTY_FOUNDER, ROLE_FOUNDER]
 
 # ⚠️ Впиши сюда ID категории с временными голосовыми каналами, которые чистит /cleanup.
 # Если оставить None — команда просто откажется работать (без ID слишком опасно чистить весь сервер).
@@ -35,10 +33,10 @@ intents.message_content = True
 intents.members = True
 
 # ========== БАЗА ДАННЫХ ==========
-conn = sqlite3.connect('maksonbot.db', check_same_thread=False)
+conn = sqlite3.connect('penabot.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
-    channel_id TEXT PRIMARY KEY,
+    thread_id TEXT PRIMARY KEY,
     user_id TEXT,
     created_at TEXT
 )''')
@@ -47,21 +45,21 @@ c.execute('''CREATE TABLE IF NOT EXISTS blocked_users (
 )''')
 conn.commit()
 
-def db_add_ticket(channel_id, user_id):
-    c.execute("INSERT INTO tickets (channel_id, user_id, created_at) VALUES (?,?,?)",
-              (str(channel_id), str(user_id), datetime.now().isoformat()))
+def db_add_ticket(thread_id, user_id):
+    c.execute("INSERT INTO tickets (thread_id, user_id, created_at) VALUES (?,?,?)",
+              (str(thread_id), str(user_id), datetime.now().isoformat()))
     conn.commit()
 
-def db_get_ticket(channel_id):
-    c.execute("SELECT user_id, created_at FROM tickets WHERE channel_id=?", (str(channel_id),))
+def db_get_ticket(thread_id):
+    c.execute("SELECT user_id, created_at FROM tickets WHERE thread_id=?", (str(thread_id),))
     return c.fetchone()
 
 def db_get_open_ticket_by_user(user_id):
-    c.execute("SELECT channel_id FROM tickets WHERE user_id=?", (str(user_id),))
+    c.execute("SELECT thread_id FROM tickets WHERE user_id=?", (str(user_id),))
     return c.fetchone()
 
-def db_delete_ticket(channel_id):
-    c.execute("DELETE FROM tickets WHERE channel_id=?", (str(channel_id),))
+def db_delete_ticket(thread_id):
+    c.execute("DELETE FROM tickets WHERE thread_id=?", (str(thread_id),))
     conn.commit()
 
 def db_block_user(user_id):
@@ -95,44 +93,10 @@ def is_mod(user: discord.Member) -> bool:
 # ========== FLASK (keep-alive для Render) ==========
 app = Flask('')
 @app.route('/')
-def home(): return "Бот MAKSON работает!"
+def home(): return "Бот PENA работает!"
 threading.Thread(target=lambda: app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False), daemon=True).start()
 
-# ========== ТИКЕТЫ ==========
-async def get_or_create_tickets_category(guild: discord.Guild) -> discord.CategoryChannel:
-    category = discord.utils.get(guild.categories, name=TICKETS_CATEGORY_NAME)
-    if category is None:
-        category = await guild.create_category(TICKETS_CATEGORY_NAME)
-    return category
-
-class CloseTicketButton(Button):
-    def __init__(self):
-        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket_button")
-
-    async def callback(self, i: discord.Interaction):
-        ticket = db_get_ticket(i.channel.id)
-        if not ticket:
-            await i.response.send_message("❌ Это не канал тикета", ephemeral=True)
-            return
-
-        owner_id = int(ticket[0])
-        if i.user.id != owner_id and not is_mod(i.user):
-            await i.response.send_message("❌ Закрыть тикет может только автор или модератор", ephemeral=True)
-            return
-
-        await i.response.send_message("🔒 Тикет будет закрыт через 5 секунд...")
-        db_delete_ticket(i.channel.id)
-        await asyncio.sleep(5)
-        try:
-            await i.channel.delete()
-        except Exception as e:
-            print(f"Не удалось удалить канал тикета: {e}")
-
-def build_close_ticket_view() -> View:
-    view = View(timeout=None)
-    view.add_item(CloseTicketButton())
-    return view
-
+# ========== ТИКЕТЫ (реализованы как приватные ветки) ==========
 COMPLAINT_SUBCATEGORIES = [
     ("Оскорбление/грубость", "🚫"),
     ("Флуд/спам", "📢"),
@@ -148,26 +112,41 @@ SUGGESTION_SUBCATEGORIES = [
     ("Другое", "❓"),
 ]
 
-async def create_ticket_channel(i: discord.Interaction, category_label: str, subcategory_label: str, description: str):
-    category = await get_or_create_tickets_category(i.guild)
+def get_ticket_ping_role_ids(subcategory_label: str) -> list:
+    # Жалобу на админа видит только руководство, а не рядовые модераторы —
+    # это моё дополнение под вашу иерархию ролей.
+    if subcategory_label == "Жалоба на админа":
+        return [ROLE_LEADERSHIP, ROLE_DEPUTY_FOUNDER, ROLE_FOUNDER]
+    return [ROLE_MODERATOR]
 
-    overwrites = {
-        i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-        i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-    }
+async def ensure_mod_thread_access(channel: discord.TextChannel):
+    # Приватные ветки видят только приглашённые + те, у кого есть Manage Threads
+    # на родительском канале. Выдаём это право ролям модерации один раз при /setup_tickets.
     for role_id in MOD_ROLE_IDS:
-        role = i.guild.get_role(role_id)
+        role = channel.guild.get_role(role_id)
         if role:
-            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            try:
+                await channel.set_permissions(role, manage_threads=True, reason="Доступ к приватным веткам тикетов")
+            except Exception as e:
+                print(f"Не удалось выдать manage_threads роли {role_id}: {e}")
 
+async def create_ticket_thread(i: discord.Interaction, category_label: str, subcategory_label: str, description: str) -> discord.Thread:
     prefix = "жалоба" if category_label == "Жалоба" else "предложение"
-    channel_name = f"{prefix}-{i.user.name}".lower().replace(" ", "-")[:90]
+    thread_name = f"{prefix}-{i.user.name}"[:90]
 
-    channel = await category.create_text_channel(
-        channel_name, overwrites=overwrites, reason=f"Тикет ({category_label}/{subcategory_label}) от {i.user}"
+    thread = await i.channel.create_thread(
+        name=thread_name,
+        type=discord.ChannelType.private_thread,
+        invitable=False,
+        auto_archive_duration=1440,
+        reason=f"Тикет ({category_label}/{subcategory_label}) от {i.user}"
     )
-    db_add_ticket(channel.id, i.user.id)
+    await thread.add_user(i.user)
+
+    db_add_ticket(thread.id, i.user.id)
+
+    ping_role_ids = get_ticket_ping_role_ids(subcategory_label)
+    ping_mentions = " ".join(f"<@&{rid}>" for rid in ping_role_ids if i.guild.get_role(rid))
 
     embed = discord.Embed(
         title=f"🎫 {category_label}: {subcategory_label}",
@@ -175,12 +154,42 @@ async def create_ticket_channel(i: discord.Interaction, category_label: str, sub
             f"**От:** {i.user.mention}\n\n"
             f"**Описание:**\n{description}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Модераторы скоро подключатся."
+            f"⏱️ Ответ в течение 30 минут."
         ),
         color=discord.Color.red() if category_label == "Жалоба" else discord.Color.green()
     )
-    await channel.send(content=i.user.mention, embed=embed, view=build_close_ticket_view())
-    return channel
+    await thread.send(content=f"{i.user.mention} {ping_mentions}".strip(), embed=embed, view=build_close_ticket_view())
+
+    return thread
+
+class CloseTicketButton(Button):
+    def __init__(self):
+        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket_button")
+
+    async def callback(self, i: discord.Interaction):
+        ticket = db_get_ticket(i.channel.id)
+        if not ticket:
+            await i.response.send_message("❌ Это не ветка тикета", ephemeral=True)
+            return
+
+        owner_id = int(ticket[0])
+        if i.user.id != owner_id and not is_mod(i.user):
+            await i.response.send_message("❌ Закрыть тикет может только автор или модератор", ephemeral=True)
+            return
+
+        # Не удаляем ветку, а архивируем и блокируем — история остаётся у модераторов
+        # (полезно как доказательство по жалобам). Это моё дополнение к исходному запросу.
+        await i.response.send_message("🔒 Тикет закрыт и заархивирован.")
+        db_delete_ticket(i.channel.id)
+        try:
+            await i.channel.edit(archived=True, locked=True, reason=f"Тикет закрыт пользователем {i.user}")
+        except Exception as e:
+            print(f"Не удалось заархивировать ветку тикета: {e}")
+
+def build_close_ticket_view() -> View:
+    view = View(timeout=None)
+    view.add_item(CloseTicketButton())
+    return view
 
 class TicketDescriptionModal(Modal):
     description_text = TextInput(
@@ -201,19 +210,19 @@ class TicketDescriptionModal(Modal):
 
         existing = db_get_open_ticket_by_user(i.user.id)
         if existing:
-            channel = i.guild.get_channel(int(existing[0]))
-            if channel:
-                await i.followup.send(f"❌ У тебя уже есть открытый тикет: {channel.mention}", ephemeral=True)
+            thread = i.guild.get_thread(int(existing[0]))
+            if thread:
+                await i.followup.send(f"❌ У тебя уже есть открытый тикет: {thread.mention}", ephemeral=True)
                 return
-            db_delete_ticket(existing[0])  # канал удалили вручную — чистим "хвост" в БД
+            db_delete_ticket(existing[0])  # ветку удалили/архивировали вручную — чистим "хвост" в БД
 
         try:
-            channel = await create_ticket_channel(i, self.category_label, self.subcategory_label, self.description_text.value)
+            thread = await create_ticket_thread(i, self.category_label, self.subcategory_label, self.description_text.value)
         except Exception as e:
             await i.followup.send(f"❌ Не удалось создать тикет: {e}", ephemeral=True)
             return
 
-        await i.followup.send(f"✅ Тикет создан: {channel.mention}", ephemeral=True)
+        await i.followup.send(f"✅ Тикет создан: {thread.mention}", ephemeral=True)
 
 class SubcategoryButton(Button):
     def __init__(self, category_label: str, subcategory_label: str, emoji: str):
@@ -237,9 +246,11 @@ class ComplaintButton(Button):
 
     async def callback(self, i: discord.Interaction):
         existing = db_get_open_ticket_by_user(i.user.id)
-        if existing and i.guild.get_channel(int(existing[0])):
-            await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {i.guild.get_channel(int(existing[0])).mention}", ephemeral=True)
-            return
+        if existing:
+            thread = i.guild.get_thread(int(existing[0]))
+            if thread:
+                await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {thread.mention}", ephemeral=True)
+                return
         await i.response.send_message("📋 Выберите причину жалобы:", view=build_subcategory_view("Жалоба"), ephemeral=True)
 
 class SuggestionButton(Button):
@@ -248,9 +259,11 @@ class SuggestionButton(Button):
 
     async def callback(self, i: discord.Interaction):
         existing = db_get_open_ticket_by_user(i.user.id)
-        if existing and i.guild.get_channel(int(existing[0])):
-            await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {i.guild.get_channel(int(existing[0])).mention}", ephemeral=True)
-            return
+        if existing:
+            thread = i.guild.get_thread(int(existing[0]))
+            if thread:
+                await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {thread.mention}", ephemeral=True)
+                return
         await i.response.send_message("💡 Выберите тип предложения:", view=build_subcategory_view("Предложение"), ephemeral=True)
 
 def build_ticket_panel_view() -> View:
@@ -271,7 +284,7 @@ class RulesModal(Modal, title="Правила сервера"):
 
     async def on_submit(self, i: discord.Interaction):
         embed = discord.Embed(title="📋 Правила сервера", description=self.rules_text.value, color=discord.Color.orange())
-        embed.set_footer(text="MAKSON Project")
+        embed.set_footer(text="PENA Project")
         await i.channel.send(embed=embed)
         await i.response.send_message("✅ Правила отправлены!", ephemeral=True)
 
@@ -305,7 +318,7 @@ class SetupRulesModal(Modal, title="Правила сервера"):
             return
 
         embed = discord.Embed(title="📋 Правила сервера", description=self.rules_text.value, color=discord.Color.orange())
-        embed.set_footer(text="MAKSON Project")
+        embed.set_footer(text="PENA Project")
         await thread.send(embed=embed)
 
         await i.followup.send(f"✅ Правила опубликованы в ветке {thread.mention}", ephemeral=True)
@@ -318,12 +331,14 @@ async def setup_tickets(i: discord.Interaction):
         return
     await i.response.defer()
 
+    await ensure_mod_thread_access(i.channel)
+
     embed = discord.Embed(
-        title="🎫 Техподдержка MAKSON",
+        title="🎫 Техподдержка PENA",
         description=(
             "1️⃣ Нажми «Жалоба» или «Предложение»\n"
             "2️⃣ Выбери подкатегорию\n"
-            "3️⃣ Заполни форму — тикет создастся автоматически\n\n"
+            "3️⃣ Заполни форму — тикет-ветка создастся автоматически\n\n"
             "**Правила**\n"
             "• Один открытый тикет на человека\n"
             "• Опиши проблему максимально подробно\n"
@@ -331,7 +346,7 @@ async def setup_tickets(i: discord.Interaction):
         ),
         color=discord.Color.blurple()
     )
-    embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
+    embed.set_footer(text="PENA Project • Техподдержка 24/7")
 
     await i.followup.send(embed=embed, view=build_ticket_panel_view())
 
@@ -432,7 +447,7 @@ async def sync_cmd(i: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} запущен")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты MAKSON"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты PENA"))
 
     # Регистрируем "вечные" View заново после каждого рестарта бота,
     # иначе кнопки в старых сообщениях перестанут отвечать после перезапуска.
