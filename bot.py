@@ -198,6 +198,41 @@ class RulesModal(Modal, title="Правила сервера"):
         await i.channel.send(embed=embed)
         await i.response.send_message("✅ Правила отправлены!", ephemeral=True)
 
+class SetupRulesModal(Modal, title="Правила сервера"):
+    thread_name = TextInput(
+        label="Название ветки",
+        placeholder="Правила сервера",
+        default="📋 Правила сервера",
+        max_length=90,
+        required=True
+    )
+    rules_text = TextInput(
+        label="Текст правил",
+        style=discord.TextStyle.paragraph,
+        placeholder="Впиши сюда правила сервера...",
+        max_length=4000,
+        required=True
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            thread = await i.channel.create_thread(
+                name=self.thread_name.value,
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=10080,
+                reason=f"Ветка с правилами создана {i.user}"
+            )
+        except Exception as e:
+            await i.followup.send(f"❌ Не удалось создать ветку: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="📋 Правила сервера", description=self.rules_text.value, color=discord.Color.orange())
+        embed.set_footer(text="MAKSON Project")
+        await thread.send(embed=embed)
+
+        await i.followup.send(f"✅ Правила опубликованы в ветке {thread.mention}", ephemeral=True)
+
 # ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
@@ -227,6 +262,13 @@ async def send_rules(i: discord.Interaction):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
     await i.response.send_modal(RulesModal())
+
+@bot.tree.command(name="setup_rules", description="Создать ветку с правилами")
+async def setup_rules(i: discord.Interaction):
+    if not is_mod(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+    await i.response.send_modal(SetupRulesModal())
 
 @bot.tree.command(name="commands", description="Список команд")
 async def commands_list(i: discord.Interaction):
