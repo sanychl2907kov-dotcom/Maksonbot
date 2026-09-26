@@ -21,12 +21,20 @@ ROLE_LEADERSHIP = 1546813764706377819       # Руководство клана
 ROLE_MODERATOR = 1546525641283862558        # Модератор ДС
 ROLE_DEPUTY_FOUNDER = 1546516686583365642   # Зам создателя
 ROLE_FOUNDER = 1546515263300571279          # Создатель
+ROLE_TRIAL_MODERATOR = 1546802692188545167  # Испытательный модератор — урезанные права
 
 MOD_ROLE_IDS = [ROLE_LEADERSHIP, ROLE_MODERATOR, ROLE_DEPUTY_FOUNDER, ROLE_FOUNDER]
+STAFF_ROLE_IDS = MOD_ROLE_IDS + [ROLE_TRIAL_MODERATOR]  # для доступа к приватным веткам тикетов
 
 # ⚠️ Впиши сюда ID категории с временными голосовыми каналами, которые чистит /cleanup.
 # Если оставить None — команда просто откажется работать (без ID слишком опасно чистить весь сервер).
 VOICE_CLEANUP_CATEGORY_ID = None
+
+# Тикеты можно открывать только в этом канале.
+TICKETS_CHANNEL_ID = 1553376459844886648
+
+# Сюда падают записи о том, кто открыл/закрыл тикет.
+LOGS_CHANNEL_ID = 1553375819810869350
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -87,8 +95,14 @@ class BlockCheckTree(app_commands.CommandTree):
 bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=BlockCheckTree)
 bot.synced = False  # чтобы не синхронизировать команды при каждом реконнекте
 
-def is_mod(user: discord.Member) -> bool:
+def is_full_mod(user: discord.Member) -> bool:
     return user.id == AUTHORIZED_USER_ID or any(r.id in MOD_ROLE_IDS for r in getattr(user, "roles", []))
+
+def is_trial_mod(user: discord.Member) -> bool:
+    return any(r.id == ROLE_TRIAL_MODERATOR for r in getattr(user, "roles", []))
+
+def is_staff(user: discord.Member) -> bool:
+    return is_full_mod(user) or is_trial_mod(user)
 
 # ========== FLASK (keep-alive для Render) ==========
 app = Flask('')
@@ -117,12 +131,22 @@ def get_ticket_ping_role_ids(subcategory_label: str) -> list:
     # это моё дополнение под вашу иерархию ролей.
     if subcategory_label == "Жалоба на админа":
         return [ROLE_LEADERSHIP, ROLE_DEPUTY_FOUNDER, ROLE_FOUNDER]
-    return [ROLE_MODERATOR]
+    return [ROLE_MODERATOR, ROLE_TRIAL_MODERATOR]
+
+async def send_log(guild: discord.Guild, embed: discord.Embed):
+    if LOGS_CHANNEL_ID is None:
+        return
+    channel = guild.get_channel(LOGS_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"Не удалось отправить лог в {LOGS_CHANNEL_ID}: {e}")
 
 async def ensure_mod_thread_access(channel: discord.TextChannel):
     # Приватные ветки видят только приглашённые + те, у кого есть Manage Threads
-    # на родительском канале. Выдаём это право ролям модерации один раз при /setup_tickets.
-    for role_id in MOD_ROLE_IDS:
+    # на родительском канале. Выдаём это право всем ролям стаффа один раз при /setup_tickets.
+    for role_id in STAFF_ROLE_IDS:
         role = channel.guild.get_role(role_id)
         if role:
             try:
@@ -160,6 +184,18 @@ async def create_ticket_thread(i: discord.Interaction, category_label: str, subc
     )
     await thread.send(content=f"{i.user.mention} {ping_mentions}".strip(), embed=embed, view=build_close_ticket_view())
 
+    log_embed = discord.Embed(
+        title="🟢 Тикет открыт",
+        description=(
+            f"**Категория:** {category_label} — {subcategory_label}\n"
+            f"**Автор:** {i.user.mention} (`{i.user.id}`)\n"
+            f"**Ветка:** {thread.mention}"
+        ),
+        color=discord.Color.green(),
+        timestamp=datetime.now()
+    )
+    await send_log(i.guild, log_embed)
+
     return thread
 
 class CloseTicketButton(Button):
@@ -173,7 +209,7 @@ class CloseTicketButton(Button):
             return
 
         owner_id = int(ticket[0])
-        if i.user.id != owner_id and not is_mod(i.user):
+        if i.user.id != owner_id and not is_staff(i.user):
             await i.response.send_message("❌ Закрыть тикет может только автор или модератор", ephemeral=True)
             return
 
@@ -181,6 +217,19 @@ class CloseTicketButton(Button):
         # (полезно как доказательство по жалобам). Это моё дополнение к исходному запросу.
         await i.response.send_message("🔒 Тикет закрыт и заархивирован.")
         db_delete_ticket(i.channel.id)
+
+        log_embed = discord.Embed(
+            title="🔴 Тикет закрыт",
+            description=(
+                f"**Автор тикета:** <@{owner_id}> (`{owner_id}`)\n"
+                f"**Закрыл:** {i.user.mention} (`{i.user.id}`)\n"
+                f"**Ветка:** {i.channel.mention}"
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        await send_log(i.guild, log_embed)
+
         try:
             await i.channel.edit(archived=True, locked=True, reason=f"Тикет закрыт пользователем {i.user}")
         except Exception as e:
@@ -245,6 +294,9 @@ class ComplaintButton(Button):
         super().__init__(label="Жалоба", emoji="🚩", style=discord.ButtonStyle.danger, custom_id="ticket_complaint_button")
 
     async def callback(self, i: discord.Interaction):
+        if TICKETS_CHANNEL_ID is not None and i.channel.id != TICKETS_CHANNEL_ID:
+            await i.response.send_message("❌ Тикеты можно открывать только в канале тех-поддержки", ephemeral=True)
+            return
         existing = db_get_open_ticket_by_user(i.user.id)
         if existing:
             thread = i.guild.get_thread(int(existing[0]))
@@ -258,6 +310,9 @@ class SuggestionButton(Button):
         super().__init__(label="Предложение", emoji="💡", style=discord.ButtonStyle.success, custom_id="ticket_suggestion_button")
 
     async def callback(self, i: discord.Interaction):
+        if TICKETS_CHANNEL_ID is not None and i.channel.id != TICKETS_CHANNEL_ID:
+            await i.response.send_message("❌ Тикеты можно открывать только в канале тех-поддержки", ephemeral=True)
+            return
         existing = db_get_open_ticket_by_user(i.user.id)
         if existing:
             thread = i.guild.get_thread(int(existing[0]))
@@ -326,8 +381,11 @@ class SetupRulesModal(Modal, title="Правила сервера"):
 # ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
-    if not is_mod(i.user):
+    if not is_full_mod(i.user):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+    if TICKETS_CHANNEL_ID is not None and i.channel.id != TICKETS_CHANNEL_ID:
+        await i.response.send_message("❌ Эту команду можно использовать только в канале тех-поддержки", ephemeral=True)
         return
     await i.response.defer()
 
@@ -352,14 +410,14 @@ async def setup_tickets(i: discord.Interaction):
 
 @bot.tree.command(name="send_rules", description="Отправить правила")
 async def send_rules(i: discord.Interaction):
-    if not is_mod(i.user):
+    if not is_full_mod(i.user):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
     await i.response.send_modal(RulesModal())
 
 @bot.tree.command(name="setup_rules", description="Создать ветку с правилами")
 async def setup_rules(i: discord.Interaction):
-    if not is_mod(i.user):
+    if not is_full_mod(i.user):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
     await i.response.send_modal(SetupRulesModal())
@@ -374,11 +432,12 @@ async def commands_list(i: discord.Interaction):
 @bot.tree.command(name="timeout", description="Выдать тайм-аут")
 @app_commands.describe(user="Кому выдать тайм-аут", minutes="На сколько минут", reason="Причина")
 async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Не указана"):
-    if not is_mod(i.user):
+    if not is_staff(i.user):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
-    if minutes <= 0 or minutes > 40320:
-        await i.response.send_message("❌ Время должно быть от 1 до 40320 минут (28 дней)", ephemeral=True)
+    max_minutes = 40320 if is_full_mod(i.user) else 60  # испытательный модератор — максимум 1 час
+    if minutes <= 0 or minutes > max_minutes:
+        await i.response.send_message(f"❌ Время должно быть от 1 до {max_minutes} минут", ephemeral=True)
         return
     try:
         await user.timeout(timedelta(minutes=minutes), reason=reason)
@@ -403,7 +462,7 @@ async def toggle_access(i: discord.Interaction, user: discord.Member):
 
 @bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
 async def cleanup_cmd(i: discord.Interaction):
-    if not is_mod(i.user):
+    if not is_full_mod(i.user):
         await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
 
@@ -444,6 +503,14 @@ async def sync_cmd(i: discord.Interaction):
         await i.followup.send("✅ Синхронизировано!", ephemeral=True)
 
 # ========== СОБЫТИЯ ==========
+@bot.event
+async def on_disconnect():
+    print("⚠️ Бот отключился от Discord (on_disconnect)")
+
+@bot.event
+async def on_resumed():
+    print("✅ Соединение с Discord восстановлено (on_resumed)")
+
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} запущен")
