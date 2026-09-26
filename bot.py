@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import View, Button, Modal, TextInput
 import os
 import sqlite3
@@ -36,6 +36,10 @@ TICKETS_CHANNEL_ID = 1553376459844886648
 # Сюда падают записи о том, кто открыл/закрыл тикет.
 LOGS_CHANNEL_ID = 1553375819810869350
 
+# Через сколько часов бездействия бот напомнит про тикет, и через сколько после этого закроет сам.
+STALE_WARN_HOURS = 48
+STALE_CLOSE_HOURS = 72
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -47,7 +51,8 @@ c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     thread_id TEXT PRIMARY KEY,
     user_id TEXT,
     created_at TEXT,
-    claimed_by TEXT
+    claimed_by TEXT,
+    stale_warned_at TEXT
 )''')
 c.execute('''CREATE TABLE IF NOT EXISTS blocked_users (
     user_id TEXT PRIMARY KEY
@@ -58,6 +63,16 @@ c.execute('''CREATE TABLE IF NOT EXISTS warnings (
     moderator_id TEXT,
     reason TEXT,
     created_at TEXT
+)''')
+c.execute('''CREATE TABLE IF NOT EXISTS ticket_history (
+    thread_id TEXT PRIMARY KEY,
+    user_id TEXT,
+    category TEXT,
+    subcategory TEXT,
+    claimed_by TEXT,
+    closed_by TEXT,
+    opened_at TEXT,
+    closed_at TEXT
 )''')
 conn.commit()
 
@@ -73,6 +88,14 @@ def db_get_ticket(thread_id):
 def db_claim_ticket(thread_id, moderator_id):
     c.execute("UPDATE tickets SET claimed_by=? WHERE thread_id=?", (str(moderator_id), str(thread_id)))
     conn.commit()
+
+def db_set_stale_warned(thread_id, timestamp: str):
+    c.execute("UPDATE tickets SET stale_warned_at=? WHERE thread_id=?", (timestamp, str(thread_id)))
+    conn.commit()
+
+def db_get_open_tickets_raw():
+    c.execute("SELECT thread_id, user_id, created_at, stale_warned_at FROM tickets")
+    return c.fetchall()
 
 def db_get_open_ticket_by_user(user_id):
     c.execute("SELECT thread_id FROM tickets WHERE user_id=?", (str(user_id),))
@@ -106,6 +129,20 @@ def db_get_warnings(user_id):
 def db_count_warnings(user_id) -> int:
     c.execute("SELECT COUNT(*) FROM warnings WHERE user_id=?", (str(user_id),))
     return c.fetchone()[0]
+
+def db_log_ticket_opened(thread_id, user_id, category, subcategory):
+    c.execute("INSERT INTO ticket_history (thread_id, user_id, category, subcategory, opened_at) VALUES (?,?,?,?,?)",
+              (str(thread_id), str(user_id), category, subcategory, datetime.now().isoformat()))
+    conn.commit()
+
+def db_log_ticket_claimed(thread_id, moderator_id):
+    c.execute("UPDATE ticket_history SET claimed_by=? WHERE thread_id=?", (str(moderator_id), str(thread_id)))
+    conn.commit()
+
+def db_log_ticket_closed(thread_id, closed_by):
+    c.execute("UPDATE ticket_history SET closed_by=?, closed_at=? WHERE thread_id=?",
+              (str(closed_by) if closed_by else None, datetime.now().isoformat(), str(thread_id)))
+    conn.commit()
 
 # ========== ГЛОБАЛЬНАЯ ПРОВЕРКА ДОСТУПА ==========
 # В discord.py нет декоратора @bot.tree.check — глобальная проверка для слэш-команд
@@ -193,6 +230,7 @@ async def create_ticket_thread(i: discord.Interaction, category_label: str, subc
     await thread.add_user(i.user)
 
     db_add_ticket(thread.id, i.user.id)
+    db_log_ticket_opened(thread.id, i.user.id, category_label, subcategory_label)
 
     ping_role_ids = get_ticket_ping_role_ids(subcategory_label)
     ping_mentions = " ".join(f"<@&{rid}>" for rid in ping_role_ids if i.guild.get_role(rid))
@@ -252,6 +290,7 @@ class ClaimTicketButton(Button):
             return
 
         db_claim_ticket(i.channel.id, i.user.id)
+        db_log_ticket_claimed(i.channel.id, i.user.id)
         await i.response.send_message(f"🙋 {i.user.mention} взял(а) тикет в работу.")
 
         # Меняем кнопку на неактивный индикатор, чтобы другие не пытались забрать тот же тикет —
@@ -284,6 +323,7 @@ class CloseTicketButton(Button):
         # (полезно как доказательство по жалобам). Это моё дополнение к исходному запросу.
         await i.response.send_message("🔒 Тикет закрыт и заархивирован.")
         db_delete_ticket(i.channel.id)
+        db_log_ticket_closed(i.channel.id, i.user.id)
 
         claim_line = f"\n**Взял в работу:** <@{claimed_by}>" if claimed_by else ""
         log_embed = discord.Embed(
@@ -448,6 +488,63 @@ class SetupRulesModal(Modal, title="Правила сервера"):
 
         await i.followup.send(f"✅ Правила опубликованы в ветке {thread.mention}", ephemeral=True)
 
+# ========== АВТОЗАКРЫТИЕ ЗАВИСШИХ ТИКЕТОВ ==========
+# Моё дополнение: раз в час бот проверяет открытые тикеты. Если тикет висит без
+# реакции дольше STALE_WARN_HOURS — напоминает автору, что пора ответить или закрыть.
+# Если после этого проходит ещё STALE_CLOSE_HOURS-STALE_WARN_HOURS часов без внимания
+# — бот закрывает его сам, чтобы тикеты не копились мёртвым грузом у модераторов.
+@tasks.loop(hours=1)
+async def check_stale_tickets():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    now = datetime.now()
+    for thread_id, user_id, created_at, stale_warned_at in db_get_open_tickets_raw():
+        age_hours = (now - datetime.fromisoformat(created_at)).total_seconds() / 3600
+
+        thread = guild.get_thread(int(thread_id))
+        if not thread:
+            db_delete_ticket(thread_id)  # ветку удалили вручную — чистим "хвост" в БД
+            continue
+
+        if stale_warned_at is None and age_hours >= STALE_WARN_HOURS:
+            try:
+                await thread.send(
+                    f"<@{user_id}> Этот тикет открыт уже давно без ответа. "
+                    f"Если вопрос ещё актуален — напиши сюда. Иначе он закроется автоматически "
+                    f"через {STALE_CLOSE_HOURS - STALE_WARN_HOURS} ч."
+                )
+                db_set_stale_warned(thread_id, now.isoformat())
+            except Exception as e:
+                print(f"Не удалось отправить напоминание в тикет {thread_id}: {e}")
+
+        elif stale_warned_at is not None and age_hours >= STALE_CLOSE_HOURS:
+            try:
+                await thread.send("🔒 Тикет автоматически закрыт из-за отсутствия активности.")
+                await thread.edit(archived=True, locked=True, reason="Автозакрытие — нет активности")
+            except Exception as e:
+                print(f"Не удалось автоматически закрыть тикет {thread_id}: {e}")
+
+            db_delete_ticket(thread_id)
+            db_log_ticket_closed(thread_id, None)
+
+            log_embed = discord.Embed(
+                title="🔴 Тикет закрыт автоматически",
+                description=(
+                    f"**Автор:** <@{user_id}>\n"
+                    f"**Причина:** нет активности {STALE_CLOSE_HOURS}+ часов\n"
+                    f"**Ветка:** {thread.mention}"
+                ),
+                color=discord.Color.dark_grey(),
+                timestamp=now
+            )
+            await send_log(guild, log_embed)
+
+@check_stale_tickets.before_loop
+async def before_check_stale_tickets():
+    await bot.wait_until_ready()
+
 # ========== КОМАНДЫ ==========
 @bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
 async def setup_tickets(i: discord.Interaction):
@@ -517,6 +614,47 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
     except Exception as e:
         await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+@bot.tree.command(name="ticket_stats", description="Статистика по тикетам")
+async def ticket_stats_cmd(i: discord.Interaction):
+    if not is_staff(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+
+    c.execute("SELECT COUNT(*) FROM ticket_history")
+    total_opened = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM ticket_history WHERE closed_at IS NOT NULL")
+    total_closed = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM tickets")
+    currently_open = c.fetchone()[0]
+
+    c.execute("""
+        SELECT closed_by, COUNT(*) as cnt FROM ticket_history
+        WHERE closed_by IS NOT NULL
+        GROUP BY closed_by ORDER BY cnt DESC LIMIT 5
+    """)
+    top_closers = c.fetchall()
+
+    c.execute("""
+        SELECT AVG(julianday(closed_at) - julianday(opened_at)) FROM ticket_history
+        WHERE closed_at IS NOT NULL
+    """)
+    avg_days = c.fetchone()[0]
+    avg_text = f"{avg_days * 24:.1f} ч." if avg_days is not None else "—"
+
+    embed = discord.Embed(title="📊 Статистика тикетов", color=discord.Color.blurple())
+    embed.add_field(name="Всего открыто", value=str(total_opened), inline=True)
+    embed.add_field(name="Всего закрыто", value=str(total_closed), inline=True)
+    embed.add_field(name="Сейчас открыто", value=str(currently_open), inline=True)
+    embed.add_field(name="Среднее время обработки", value=avg_text, inline=False)
+
+    if top_closers:
+        leaderboard = "\n".join(f"{idx + 1}. <@{uid}> — {cnt}" for idx, (uid, cnt) in enumerate(top_closers))
+        embed.add_field(name="🏆 Топ по закрытым тикетам", value=leaderboard, inline=False)
+
+    await i.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="warn", description="Выдать предупреждение участнику")
 @app_commands.describe(user="Кому выдать предупреждение", reason="Причина")
 async def warn_cmd(i: discord.Interaction, user: discord.Member, reason: str):
@@ -537,6 +675,17 @@ async def warn_cmd(i: discord.Interaction, user: discord.Member, reason: str):
         color=discord.Color.orange()
     )
     await i.response.send_message(embed=embed)
+
+    # Моё дополнение: уведомляем пользователя лично, чтобы предупреждение не было "невидимым"
+    try:
+        dm_embed = discord.Embed(
+            title="⚠️ Тебе выдано предупреждение",
+            description=f"**Сервер:** {i.guild.name}\n**Причина:** {reason}\n**Всего предупреждений:** {total}",
+            color=discord.Color.orange()
+        )
+        await user.send(embed=dm_embed)
+    except discord.Forbidden:
+        pass  # у пользователя закрыты личные сообщения — не критично
 
     log_embed = discord.Embed(
         title="⚠️ Выдано предупреждение",
@@ -653,6 +802,9 @@ async def on_ready():
     # иначе кнопки в старых сообщениях перестанут отвечать после перезапуска.
     bot.add_view(build_ticket_panel_view())
     bot.add_view(build_ticket_message_view())
+
+    if not check_stale_tickets.is_running():
+        check_stale_tickets.start()
 
     if not bot.synced:
         guild = bot.get_guild(GUILD_ID)
