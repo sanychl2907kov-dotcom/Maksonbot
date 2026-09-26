@@ -133,11 +133,70 @@ def build_close_ticket_view() -> View:
     view.add_item(CloseTicketButton())
     return view
 
-class OpenTicketButton(Button):
-    def __init__(self):
-        super().__init__(label="🎫 Открыть тикет", style=discord.ButtonStyle.primary, custom_id="open_ticket_button")
+COMPLAINT_SUBCATEGORIES = [
+    ("Оскорбление/грубость", "🚫"),
+    ("Флуд/спам", "📢"),
+    ("Голосовой канал", "🔊"),
+    ("Жалоба на админа", "👤"),
+    ("Другое", "❓"),
+]
 
-    async def callback(self, i: discord.Interaction):
+SUGGESTION_SUBCATEGORIES = [
+    ("Идея", "💡"),
+    ("Функционал", "🔧"),
+    ("Дизайн", "🎨"),
+    ("Другое", "❓"),
+]
+
+async def create_ticket_channel(i: discord.Interaction, category_label: str, subcategory_label: str, description: str):
+    category = await get_or_create_tickets_category(i.guild)
+
+    overwrites = {
+        i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+    }
+    for role_id in MOD_ROLE_IDS:
+        role = i.guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    prefix = "жалоба" if category_label == "Жалоба" else "предложение"
+    channel_name = f"{prefix}-{i.user.name}".lower().replace(" ", "-")[:90]
+
+    channel = await category.create_text_channel(
+        channel_name, overwrites=overwrites, reason=f"Тикет ({category_label}/{subcategory_label}) от {i.user}"
+    )
+    db_add_ticket(channel.id, i.user.id)
+
+    embed = discord.Embed(
+        title=f"🎫 {category_label}: {subcategory_label}",
+        description=(
+            f"**От:** {i.user.mention}\n\n"
+            f"**Описание:**\n{description}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Модераторы скоро подключатся."
+        ),
+        color=discord.Color.red() if category_label == "Жалоба" else discord.Color.green()
+    )
+    await channel.send(content=i.user.mention, embed=embed, view=build_close_ticket_view())
+    return channel
+
+class TicketDescriptionModal(Modal):
+    description_text = TextInput(
+        label="Опиши подробно",
+        style=discord.TextStyle.paragraph,
+        placeholder="Опиши свою проблему или предложение как можно подробнее",
+        max_length=1000,
+        required=True
+    )
+
+    def __init__(self, category_label: str, subcategory_label: str):
+        super().__init__(title=f"{category_label}: {subcategory_label}"[:45])
+        self.category_label = category_label
+        self.subcategory_label = subcategory_label
+
+    async def on_submit(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
 
         existing = db_get_open_ticket_by_user(i.user.id)
@@ -148,43 +207,56 @@ class OpenTicketButton(Button):
                 return
             db_delete_ticket(existing[0])  # канал удалили вручную — чистим "хвост" в БД
 
-        category = await get_or_create_tickets_category(i.guild)
-
-        overwrites = {
-            i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-        }
-        for role_id in MOD_ROLE_IDS:
-            role = i.guild.get_role(role_id)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-        channel_name = f"ticket-{i.user.name}".lower().replace(" ", "-")[:90]
         try:
-            channel = await category.create_text_channel(channel_name, overwrites=overwrites, reason=f"Тикет от {i.user}")
+            channel = await create_ticket_channel(i, self.category_label, self.subcategory_label, self.description_text.value)
         except Exception as e:
-            await i.followup.send(f"❌ Не удалось создать канал тикета: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Не удалось создать тикет: {e}", ephemeral=True)
             return
-
-        db_add_ticket(channel.id, i.user.id)
-
-        embed = discord.Embed(
-            title="🎫 Новый тикет",
-            description=(
-                f"Здравствуй, {i.user.mention}!\n"
-                f"Опиши свою проблему как можно подробнее — модераторы скоро подключатся.\n\n"
-                f"Чтобы закрыть тикет, нажми на кнопку ниже."
-            ),
-            color=discord.Color.blurple()
-        )
-        await channel.send(embed=embed, view=build_close_ticket_view())
 
         await i.followup.send(f"✅ Тикет создан: {channel.mention}", ephemeral=True)
 
+class SubcategoryButton(Button):
+    def __init__(self, category_label: str, subcategory_label: str, emoji: str):
+        super().__init__(label=subcategory_label, emoji=emoji, style=discord.ButtonStyle.secondary)
+        self.category_label = category_label
+        self.subcategory_label = subcategory_label
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.send_modal(TicketDescriptionModal(self.category_label, self.subcategory_label))
+
+def build_subcategory_view(category_label: str) -> View:
+    view = View(timeout=180)
+    subs = COMPLAINT_SUBCATEGORIES if category_label == "Жалоба" else SUGGESTION_SUBCATEGORIES
+    for name, emoji in subs:
+        view.add_item(SubcategoryButton(category_label, name, emoji))
+    return view
+
+class ComplaintButton(Button):
+    def __init__(self):
+        super().__init__(label="Жалоба", emoji="🚩", style=discord.ButtonStyle.danger, custom_id="ticket_complaint_button")
+
+    async def callback(self, i: discord.Interaction):
+        existing = db_get_open_ticket_by_user(i.user.id)
+        if existing and i.guild.get_channel(int(existing[0])):
+            await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {i.guild.get_channel(int(existing[0])).mention}", ephemeral=True)
+            return
+        await i.response.send_message("📋 Выберите причину жалобы:", view=build_subcategory_view("Жалоба"), ephemeral=True)
+
+class SuggestionButton(Button):
+    def __init__(self):
+        super().__init__(label="Предложение", emoji="💡", style=discord.ButtonStyle.success, custom_id="ticket_suggestion_button")
+
+    async def callback(self, i: discord.Interaction):
+        existing = db_get_open_ticket_by_user(i.user.id)
+        if existing and i.guild.get_channel(int(existing[0])):
+            await i.response.send_message(f"❌ У тебя уже есть открытый тикет: {i.guild.get_channel(int(existing[0])).mention}", ephemeral=True)
+            return
+        await i.response.send_message("💡 Выберите тип предложения:", view=build_subcategory_view("Предложение"), ephemeral=True)
+
 def build_ticket_panel_view() -> View:
     view = View(timeout=None)
-    view.add_item(OpenTicketButton())
+    view.add_item(ComplaintButton())
+    view.add_item(SuggestionButton())
     return view
 
 # ========== ПРАВИЛА ==========
@@ -249,7 +321,9 @@ async def setup_tickets(i: discord.Interaction):
     embed = discord.Embed(
         title="🎫 Техподдержка MAKSON",
         description=(
-            "Нажми на кнопку ниже, чтобы открыть тикет и связаться с поддержкой.\n\n"
+            "1️⃣ Нажми «Жалоба» или «Предложение»\n"
+            "2️⃣ Выбери подкатегорию\n"
+            "3️⃣ Заполни форму — тикет создастся автоматически\n\n"
             "**Правила**\n"
             "• Один открытый тикет на человека\n"
             "• Опиши проблему максимально подробно\n"
