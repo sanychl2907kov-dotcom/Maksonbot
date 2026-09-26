@@ -46,10 +46,18 @@ c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS tickets (
     thread_id TEXT PRIMARY KEY,
     user_id TEXT,
-    created_at TEXT
+    created_at TEXT,
+    claimed_by TEXT
 )''')
 c.execute('''CREATE TABLE IF NOT EXISTS blocked_users (
     user_id TEXT PRIMARY KEY
+)''')
+c.execute('''CREATE TABLE IF NOT EXISTS warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    moderator_id TEXT,
+    reason TEXT,
+    created_at TEXT
 )''')
 conn.commit()
 
@@ -59,8 +67,12 @@ def db_add_ticket(thread_id, user_id):
     conn.commit()
 
 def db_get_ticket(thread_id):
-    c.execute("SELECT user_id, created_at FROM tickets WHERE thread_id=?", (str(thread_id),))
+    c.execute("SELECT user_id, created_at, claimed_by FROM tickets WHERE thread_id=?", (str(thread_id),))
     return c.fetchone()
+
+def db_claim_ticket(thread_id, moderator_id):
+    c.execute("UPDATE tickets SET claimed_by=? WHERE thread_id=?", (str(moderator_id), str(thread_id)))
+    conn.commit()
 
 def db_get_open_ticket_by_user(user_id):
     c.execute("SELECT thread_id FROM tickets WHERE user_id=?", (str(user_id),))
@@ -81,6 +93,19 @@ def db_unblock_user(user_id):
 def db_is_blocked(user_id) -> bool:
     c.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (str(user_id),))
     return c.fetchone() is not None
+
+def db_add_warning(user_id, moderator_id, reason):
+    c.execute("INSERT INTO warnings (user_id, moderator_id, reason, created_at) VALUES (?,?,?,?)",
+              (str(user_id), str(moderator_id), reason, datetime.now().isoformat()))
+    conn.commit()
+
+def db_get_warnings(user_id):
+    c.execute("SELECT moderator_id, reason, created_at FROM warnings WHERE user_id=? ORDER BY created_at DESC", (str(user_id),))
+    return c.fetchall()
+
+def db_count_warnings(user_id) -> int:
+    c.execute("SELECT COUNT(*) FROM warnings WHERE user_id=?", (str(user_id),))
+    return c.fetchone()[0]
 
 # ========== ГЛОБАЛЬНАЯ ПРОВЕРКА ДОСТУПА ==========
 # В discord.py нет декоратора @bot.tree.check — глобальная проверка для слэш-команд
@@ -182,7 +207,7 @@ async def create_ticket_thread(i: discord.Interaction, category_label: str, subc
         ),
         color=discord.Color.red() if category_label == "Жалоба" else discord.Color.green()
     )
-    await thread.send(content=f"{i.user.mention} {ping_mentions}".strip(), embed=embed, view=build_close_ticket_view())
+    await thread.send(content=f"{i.user.mention} {ping_mentions}".strip(), embed=embed, view=build_ticket_message_view())
 
     log_embed = discord.Embed(
         title="🟢 Тикет открыт",
@@ -198,6 +223,47 @@ async def create_ticket_thread(i: discord.Interaction, category_label: str, subc
 
     return thread
 
+class ClaimedIndicatorButton(Button):
+    def __init__(self, claimer_name: str):
+        super().__init__(label=f"🙋 В работе: {claimer_name}"[:80], style=discord.ButtonStyle.secondary, disabled=True)
+
+    async def callback(self, i: discord.Interaction):
+        pass  # задизейблена — сюда никогда не попадём
+
+class ClaimTicketButton(Button):
+    def __init__(self):
+        super().__init__(label="🙋 Взять в работу", style=discord.ButtonStyle.primary, custom_id="claim_ticket_button")
+
+    async def callback(self, i: discord.Interaction):
+        if not is_staff(i.user):
+            await i.response.send_message("❌ Взять тикет в работу может только модератор", ephemeral=True)
+            return
+
+        ticket = db_get_ticket(i.channel.id)
+        if not ticket:
+            await i.response.send_message("❌ Это не ветка тикета", ephemeral=True)
+            return
+
+        _, _, claimed_by = ticket
+        if claimed_by:
+            claimer = i.guild.get_member(int(claimed_by))
+            mention = claimer.mention if claimer else f"<@{claimed_by}>"
+            await i.response.send_message(f"❌ Этот тикет уже взял в работу {mention}", ephemeral=True)
+            return
+
+        db_claim_ticket(i.channel.id, i.user.id)
+        await i.response.send_message(f"🙋 {i.user.mention} взял(а) тикет в работу.")
+
+        # Меняем кнопку на неактивный индикатор, чтобы другие не пытались забрать тот же тикет —
+        # это моё дополнение поверх исходного запроса на систему тикетов.
+        try:
+            new_view = View(timeout=None)
+            new_view.add_item(ClaimedIndicatorButton(i.user.display_name))
+            new_view.add_item(CloseTicketButton())
+            await i.message.edit(view=new_view)
+        except Exception as e:
+            print(f"Не удалось обновить кнопки тикета: {e}")
+
 class CloseTicketButton(Button):
     def __init__(self):
         super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket_button")
@@ -208,7 +274,8 @@ class CloseTicketButton(Button):
             await i.response.send_message("❌ Это не ветка тикета", ephemeral=True)
             return
 
-        owner_id = int(ticket[0])
+        owner_id, _, claimed_by = ticket
+        owner_id = int(owner_id)
         if i.user.id != owner_id and not is_staff(i.user):
             await i.response.send_message("❌ Закрыть тикет может только автор или модератор", ephemeral=True)
             return
@@ -218,11 +285,13 @@ class CloseTicketButton(Button):
         await i.response.send_message("🔒 Тикет закрыт и заархивирован.")
         db_delete_ticket(i.channel.id)
 
+        claim_line = f"\n**Взял в работу:** <@{claimed_by}>" if claimed_by else ""
         log_embed = discord.Embed(
             title="🔴 Тикет закрыт",
             description=(
                 f"**Автор тикета:** <@{owner_id}> (`{owner_id}`)\n"
-                f"**Закрыл:** {i.user.mention} (`{i.user.id}`)\n"
+                f"**Закрыл:** {i.user.mention} (`{i.user.id}`)"
+                f"{claim_line}\n"
                 f"**Ветка:** {i.channel.mention}"
             ),
             color=discord.Color.red(),
@@ -235,8 +304,9 @@ class CloseTicketButton(Button):
         except Exception as e:
             print(f"Не удалось заархивировать ветку тикета: {e}")
 
-def build_close_ticket_view() -> View:
+def build_ticket_message_view() -> View:
     view = View(timeout=None)
+    view.add_item(ClaimTicketButton())
     view.add_item(CloseTicketButton())
     return view
 
@@ -447,6 +517,69 @@ async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int
     except Exception as e:
         await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+@bot.tree.command(name="warn", description="Выдать предупреждение участнику")
+@app_commands.describe(user="Кому выдать предупреждение", reason="Причина")
+async def warn_cmd(i: discord.Interaction, user: discord.Member, reason: str):
+    if not is_staff(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+
+    db_add_warning(user.id, i.user.id, reason)
+    total = db_count_warnings(user.id)
+
+    embed = discord.Embed(
+        title="⚠️ Предупреждение выдано",
+        description=(
+            f"**Участник:** {user.mention}\n"
+            f"**Причина:** {reason}\n"
+            f"**Всего предупреждений:** {total}"
+        ),
+        color=discord.Color.orange()
+    )
+    await i.response.send_message(embed=embed)
+
+    log_embed = discord.Embed(
+        title="⚠️ Выдано предупреждение",
+        description=(
+            f"**Участник:** {user.mention} (`{user.id}`)\n"
+            f"**Модератор:** {i.user.mention}\n"
+            f"**Причина:** {reason}\n"
+            f"**Всего предупреждений:** {total}"
+        ),
+        color=discord.Color.orange(),
+        timestamp=datetime.now()
+    )
+    await send_log(i.guild, log_embed)
+
+    # Моё дополнение: каждые 3 предупреждения бот сам напоминает подумать о более серьёзных мерах.
+    if total % 3 == 0:
+        await i.followup.send(
+            f"🚨 У {user.mention} уже {total} предупреждений — возможно, стоит рассмотреть тайм-аут или более серьёзные меры."
+        )
+
+@bot.tree.command(name="warnings", description="Посмотреть предупреждения участника")
+@app_commands.describe(user="Участник")
+async def warnings_cmd(i: discord.Interaction, user: discord.Member):
+    if not is_staff(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+
+    rows = db_get_warnings(user.id)
+    if not rows:
+        await i.response.send_message(f"✅ У {user.mention} нет предупреждений.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title=f"⚠️ Предупреждения: {user.display_name}", color=discord.Color.orange())
+    for idx, (moderator_id, reason, created_at) in enumerate(rows[:10], start=1):
+        dt = datetime.fromisoformat(created_at)
+        embed.add_field(
+            name=f"#{idx} — <t:{int(dt.timestamp())}:d>",
+            value=f"**Причина:** {reason}\n**Модератор:** <@{moderator_id}>",
+            inline=False
+        )
+    embed.set_footer(text=f"Всего предупреждений: {len(rows)}")
+    await i.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="toggle_access", description="Забрать/вернуть доступ к командам (только владелец)")
 @app_commands.describe(user="Пользователь")
 async def toggle_access(i: discord.Interaction, user: discord.Member):
@@ -519,7 +652,7 @@ async def on_ready():
     # Регистрируем "вечные" View заново после каждого рестарта бота,
     # иначе кнопки в старых сообщениях перестанут отвечать после перезапуска.
     bot.add_view(build_ticket_panel_view())
-    bot.add_view(build_close_ticket_view())
+    bot.add_view(build_ticket_message_view())
 
     if not bot.synced:
         guild = bot.get_guild(GUILD_ID)
