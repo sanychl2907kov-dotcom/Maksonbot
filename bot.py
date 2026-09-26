@@ -2,10 +2,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
-import time
 import os
+import asyncio
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask
 import threading
@@ -18,336 +18,282 @@ if not TOKEN:
 GUILD_ID = 580351461180047379
 AUTHORIZED_USER_ID = 1495071540927266841
 MOD_ROLE_IDS = [1527380448576278760, 1478736598542581790, 1471505746800939102]
-IDEAS_CHANNEL_ID = 1529799222293958787
+
+TICKETS_CATEGORY_NAME = "🎫 Тикеты"
+
+# ⚠️ Впиши сюда ID категории с временными голосовыми каналами, которые чистит /cleanup.
+# Если оставить None — команда просто откажется работать (без ID слишком опасно чистить весь сервер).
+VOICE_CLEANUP_CATEGORY_ID = None
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-bot.synced = False  # ИСПРАВЛЕНО: чтобы не синхронизировать команды при каждом реконнекте
 
 # ========== БАЗА ДАННЫХ ==========
-conn = sqlite3.connect('ideas.db', check_same_thread=False)
+conn = sqlite3.connect('maksonbot.db', check_same_thread=False)
 c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS ideas (
-    thread_id TEXT PRIMARY KEY,
-    author_id TEXT,
-    author_name TEXT,
-    title TEXT,
-    description TEXT,
-    created_at TEXT,
-    votes_up INTEGER DEFAULT 0,
-    votes_down INTEGER DEFAULT 0,
-    voters_up TEXT DEFAULT '',
-    voters_down TEXT DEFAULT ''
+c.execute('''CREATE TABLE IF NOT EXISTS tickets (
+    channel_id TEXT PRIMARY KEY,
+    user_id TEXT,
+    created_at TEXT
 )''')
-c.execute('''CREATE TABLE IF NOT EXISTS cooldown (
-    user_id TEXT PRIMARY KEY,
-    last_idea TEXT
+c.execute('''CREATE TABLE IF NOT EXISTS blocked_users (
+    user_id TEXT PRIMARY KEY
 )''')
 conn.commit()
 
-def db_add_idea(thread_id, author_id, author_name, title, description):
-    c.execute("INSERT INTO ideas (thread_id, author_id, author_name, title, description, created_at) VALUES (?,?,?,?,?,?)",
-              (str(thread_id), str(author_id), author_name, title, description, datetime.now().isoformat()))
+def db_add_ticket(channel_id, user_id):
+    c.execute("INSERT INTO tickets (channel_id, user_id, created_at) VALUES (?,?,?)",
+              (str(channel_id), str(user_id), datetime.now().isoformat()))
     conn.commit()
 
-def db_get_idea(thread_id):
-    c.execute("SELECT author_id, author_name, title, description, created_at, votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
+def db_get_ticket(channel_id):
+    c.execute("SELECT user_id, created_at FROM tickets WHERE channel_id=?", (str(channel_id),))
     return c.fetchone()
 
-def db_delete_idea(thread_id):  # ИСПРАВЛЕНО: чистим БД при закрытии идеи, чтобы не оставались мёртвые записи
-    c.execute("DELETE FROM ideas WHERE thread_id=?", (str(thread_id),))
+def db_get_open_ticket_by_user(user_id):
+    c.execute("SELECT channel_id FROM tickets WHERE user_id=?", (str(user_id),))
+    return c.fetchone()
+
+def db_delete_ticket(channel_id):
+    c.execute("DELETE FROM tickets WHERE channel_id=?", (str(channel_id),))
     conn.commit()
 
-def db_add_vote(thread_id, user_id, vote_type):
-    c.execute("SELECT votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
-    row = c.fetchone()
-    if not row:
-        return False
-    votes_up, votes_down, voters_up, voters_down = row
-    voters_up_list = voters_up.split(',') if voters_up else []
-    voters_down_list = voters_down.split(',') if voters_down else []
-
-    if str(user_id) in voters_up_list or str(user_id) in voters_down_list:
-        return False
-
-    if vote_type == "up":
-        voters_up_list.append(str(user_id))
-        c.execute("UPDATE ideas SET votes_up=?, voters_up=? WHERE thread_id=?", (votes_up + 1, ','.join(voters_up_list), str(thread_id)))
-    else:
-        voters_down_list.append(str(user_id))
-        c.execute("UPDATE ideas SET votes_down=?, voters_down=? WHERE thread_id=?", (votes_down + 1, ','.join(voters_down_list), str(thread_id)))
-    conn.commit()
-    return True
-
-def db_remove_vote(thread_id, user_id):
-    c.execute("SELECT votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
-    row = c.fetchone()
-    if not row:
-        return False
-    votes_up, votes_down, voters_up, voters_down = row
-    voters_up_list = voters_up.split(',') if voters_up else []
-    voters_down_list = voters_down.split(',') if voters_down else []
-
-    if str(user_id) in voters_up_list:
-        voters_up_list.remove(str(user_id))
-        c.execute("UPDATE ideas SET votes_up=?, voters_up=? WHERE thread_id=?", (votes_up - 1, ','.join(voters_up_list), str(thread_id)))
-        conn.commit()
-        return True
-    elif str(user_id) in voters_down_list:
-        voters_down_list.remove(str(user_id))
-        c.execute("UPDATE ideas SET votes_down=?, voters_down=? WHERE thread_id=?", (votes_down - 1, ','.join(voters_down_list), str(thread_id)))
-        conn.commit()
-        return True
-    return False
-
-def db_get_vote_status(thread_id, user_id):
-    c.execute("SELECT voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
-    row = c.fetchone()
-    if not row:
-        return None
-    voters_up, voters_down = row
-    if str(user_id) in (voters_up.split(',') if voters_up else []):
-        return "up"
-    if str(user_id) in (voters_down.split(',') if voters_down else []):
-        return "down"
-    return None
-
-def db_get_all_ideas():
-    c.execute("SELECT thread_id, author_id, author_name, title, votes_up, votes_down FROM ideas ORDER BY (votes_up - votes_down) DESC")
-    return c.fetchall()
-
-def db_check_cooldown(user_id):
-    c.execute("SELECT last_idea FROM cooldown WHERE user_id=?", (str(user_id),))
-    row = c.fetchone()
-    if not row:
-        return True
-    last = datetime.fromisoformat(row[0])
-    return (datetime.now() - last).total_seconds() >= 300
-
-def db_set_cooldown(user_id):
-    c.execute("INSERT OR REPLACE INTO cooldown (user_id, last_idea) VALUES (?,?)",
-              (str(user_id), datetime.now().isoformat()))
+def db_block_user(user_id):
+    c.execute("INSERT OR IGNORE INTO blocked_users (user_id) VALUES (?)", (str(user_id),))
     conn.commit()
 
-# ========== FLASK ==========
+def db_unblock_user(user_id):
+    c.execute("DELETE FROM blocked_users WHERE user_id=?", (str(user_id),))
+    conn.commit()
+
+def db_is_blocked(user_id) -> bool:
+    c.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (str(user_id),))
+    return c.fetchone() is not None
+
+# ========== ГЛОБАЛЬНАЯ ПРОВЕРКА ДОСТУПА ==========
+# В discord.py нет декоратора @bot.tree.check — глобальная проверка для слэш-команд
+# делается через переопределение interaction_check в подклассе CommandTree.
+class BlockCheckTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if db_is_blocked(interaction.user.id):
+            await interaction.response.send_message("🚫 Тебе ограничен доступ к командам бота.", ephemeral=True)
+            return False
+        return True
+
+bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=BlockCheckTree)
+bot.synced = False  # чтобы не синхронизировать команды при каждом реконнекте
+
+def is_mod(user: discord.Member) -> bool:
+    return user.id == AUTHORIZED_USER_ID or any(r.id in MOD_ROLE_IDS for r in getattr(user, "roles", []))
+
+# ========== FLASK (keep-alive для Render) ==========
 app = Flask('')
 @app.route('/')
 def home(): return "Бот MAKSON работает!"
 threading.Thread(target=lambda: app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False), daemon=True).start()
 
-# ========== ФУНКЦИЯ ОБНОВЛЕНИЯ EMBED ==========
-async def update_idea_embed(thread, thread_id):
-    thread_id = str(thread_id)  # ИСПРАВЛЕНО: раньше сюда мог прилетать int и падало на срезе [:6]
-    idea = db_get_idea(thread_id)
-    if not idea:
-        return
-    author_id, author_name, title, description, created_at, votes_up, votes_down, voters_up, voters_down = idea
+# ========== ТИКЕТЫ ==========
+async def get_or_create_tickets_category(guild: discord.Guild) -> discord.CategoryChannel:
+    category = discord.utils.get(guild.categories, name=TICKETS_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(TICKETS_CATEGORY_NAME)
+    return category
 
-    created_time = datetime.fromisoformat(created_at)
-
-    embed = discord.Embed(
-        title=f"💡 {title}",
-        description=(
-            f"**Автор:** {author_name}\n"
-            f"**Описание:**\n{description}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Создано:** <t:{int(created_time.timestamp())}:R>\n"
-            f"**Голосов:** 👍 {votes_up}  |  👎 {votes_down}"
-        ),
-        color=discord.Color.gold()
-    )
-    embed.set_footer(text=f"MAKSON Project • ID: {thread_id[:6]}")
-
-    view = View(timeout=None)
-    view.add_item(VoteUpButton(thread_id))
-    view.add_item(VoteDownButton(thread_id))
-    view.add_item(UnvoteButton(thread_id))
-    view.add_item(CloseIdeaButton(thread_id))
-
-    async for msg in thread.history(limit=5):
-        if msg.author == bot.user and msg.embeds:
-            await msg.edit(embed=embed, view=view)
-            return
-
-    await thread.send(embed=embed, view=view)
-
-# ========== МОДАЛЬНОЕ ОКНО ИДЕИ ==========
-# ИСПРАВЛЕНО: логика submit'а теперь живёт в самом классе Modal (метод on_submit),
-# а не в несуществующем событии бота on_modal_submit, которое никогда не вызывалось.
-class IdeaModal(Modal, title="Новая идея"):
-    idea_title = TextInput(label="Название идеи", placeholder="Краткое название", required=True, max_length=50)
-    idea_description = TextInput(
-        label="Описание",
-        placeholder="Подробно опиши свою идею",
-        required=True,
-        style=discord.TextStyle.paragraph,
-        max_length=500
-    )
-
-    async def on_submit(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        try:
-            if not db_check_cooldown(i.user.id):
-                await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
-                return
-
-            if i.channel.id != IDEAS_CHANNEL_ID:
-                await i.followup.send("❌ Этот канал не предназначен для идей!", ephemeral=True)
-                return
-
-            try:
-                thread = await i.channel.create_thread(
-                    name=f"💡-{self.idea_title.value[:40]}",
-                    auto_archive_duration=1440,
-                    type=discord.ChannelType.public_thread,
-                    reason=f"Идея от {i.user}"
-                )
-            except Exception as e:
-                await i.followup.send(f"❌ Ошибка создания ветки: {e}", ephemeral=True)
-                return
-
-            db_add_idea(thread.id, i.user.id, i.user.name, self.idea_title.value, self.idea_description.value)
-            db_set_cooldown(i.user.id)
-
-            await update_idea_embed(thread, thread.id)
-
-            await i.followup.send(f"✅ Идея создана: {thread.mention}", ephemeral=True)
-
-        except Exception as e:
-            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-
-# ========== КНОПКИ ==========
-class IdeaButton(Button):
+class CloseTicketButton(Button):
     def __init__(self):
-        super().__init__(label="💡 Предложить идею", style=discord.ButtonStyle.primary)
+        super().__init__(label="🔒 Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket_button")
 
     async def callback(self, i: discord.Interaction):
-        # ИСПРАВЛЕНО: раньше здесь стоял defer(), из-за которого send_modal ниже падал
-        # с ошибкой "This interaction has already been responded to before"
-        if not db_check_cooldown(i.user.id):
-            await i.response.send_message("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
+        ticket = db_get_ticket(i.channel.id)
+        if not ticket:
+            await i.response.send_message("❌ Это не канал тикета", ephemeral=True)
             return
-        await i.response.send_modal(IdeaModal())
 
-class AllIdeasButton(Button):
-    def __init__(self):
-        super().__init__(label="📋 Все идеи", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        ideas = db_get_all_ideas()
-        if not ideas:
-            await i.followup.send("📭 Пока нет идей. Будь первым!", ephemeral=True)
+        owner_id = int(ticket[0])
+        if i.user.id != owner_id and not is_mod(i.user):
+            await i.response.send_message("❌ Закрыть тикет может только автор или модератор", ephemeral=True)
             return
-        embed = discord.Embed(
-            title="📋 Все идеи",
-            description="Топ идей с наибольшим рейтингом",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="MAKSON Project • Идеи сообщества")
-        for thread_id, author_id, author_name, title, votes_up, votes_down in ideas[:10]:
-            rating = votes_up - votes_down
-            embed.add_field(
-                name=f"{'⭐' if rating > 0 else '📌'} {title}",
-                value=f"**Автор:** {author_name}\n**Рейтинг:** +{votes_up} / -{votes_down}\n[Перейти](https://discord.com/channels/{GUILD_ID}/{thread_id})",
-                inline=False
-            )
-        await i.followup.send(embed=embed, ephemeral=True)
 
-class VoteUpButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="👍 За", style=discord.ButtonStyle.success)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        status = db_get_vote_status(self.thread_id, i.user.id)
-        if status == "up":
-            await i.followup.send("❌ Ты уже голосовал ЗА эту идею", ephemeral=True)
-            return
-        if db_add_vote(self.thread_id, i.user.id, "up"):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Твой голос ЗА учтён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ошибка", ephemeral=True)
-
-class VoteDownButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="👎 Против", style=discord.ButtonStyle.danger)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        status = db_get_vote_status(self.thread_id, i.user.id)
-        if status == "down":
-            await i.followup.send("❌ Ты уже голосовал ПРОТИВ этой идеи", ephemeral=True)
-            return
-        if db_add_vote(self.thread_id, i.user.id, "down"):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Твой голос ПРОТИВ учтён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ошибка", ephemeral=True)
-
-class UnvoteButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="↩️ Отменить голос", style=discord.ButtonStyle.secondary)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        if db_remove_vote(self.thread_id, i.user.id):
-            await update_idea_embed(i.channel, self.thread_id)
-            await i.followup.send("✅ Голос отменён!", ephemeral=True)
-        else:
-            await i.followup.send("❌ Ты не голосовал за эту идею", ephemeral=True)
-
-class CloseIdeaButton(Button):
-    def __init__(self, thread_id):
-        super().__init__(label="🔒 Закрыть идею", style=discord.ButtonStyle.danger)
-        self.thread_id = thread_id
-
-    async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)
-        if not any(r.id in MOD_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
-            await i.followup.send("❌ Только модераторы", ephemeral=True)
-            return
-        db_delete_idea(self.thread_id)  # ИСПРАВЛЕНО: чистим запись из БД, а не оставляем "мёртвую" идею
-        await i.followup.send("✅ Идея закрыта", ephemeral=True)
+        await i.response.send_message("🔒 Тикет будет закрыт через 5 секунд...")
+        db_delete_ticket(i.channel.id)
+        await asyncio.sleep(5)
         try:
             await i.channel.delete()
         except Exception as e:
-            print(f"Не удалось удалить тред {self.thread_id}: {e}")
+            print(f"Не удалось удалить канал тикета: {e}")
+
+def build_close_ticket_view() -> View:
+    view = View(timeout=None)
+    view.add_item(CloseTicketButton())
+    return view
+
+class OpenTicketButton(Button):
+    def __init__(self):
+        super().__init__(label="🎫 Открыть тикет", style=discord.ButtonStyle.primary, custom_id="open_ticket_button")
+
+    async def callback(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+
+        existing = db_get_open_ticket_by_user(i.user.id)
+        if existing:
+            channel = i.guild.get_channel(int(existing[0]))
+            if channel:
+                await i.followup.send(f"❌ У тебя уже есть открытый тикет: {channel.mention}", ephemeral=True)
+                return
+            db_delete_ticket(existing[0])  # канал удалили вручную — чистим "хвост" в БД
+
+        category = await get_or_create_tickets_category(i.guild)
+
+        overwrites = {
+            i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            i.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            i.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        for role_id in MOD_ROLE_IDS:
+            role = i.guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        channel_name = f"ticket-{i.user.name}".lower().replace(" ", "-")[:90]
+        try:
+            channel = await category.create_text_channel(channel_name, overwrites=overwrites, reason=f"Тикет от {i.user}")
+        except Exception as e:
+            await i.followup.send(f"❌ Не удалось создать канал тикета: {e}", ephemeral=True)
+            return
+
+        db_add_ticket(channel.id, i.user.id)
+
+        embed = discord.Embed(
+            title="🎫 Новый тикет",
+            description=(
+                f"Здравствуй, {i.user.mention}!\n"
+                f"Опиши свою проблему как можно подробнее — модераторы скоро подключатся.\n\n"
+                f"Чтобы закрыть тикет, нажми на кнопку ниже."
+            ),
+            color=discord.Color.blurple()
+        )
+        await channel.send(embed=embed, view=build_close_ticket_view())
+
+        await i.followup.send(f"✅ Тикет создан: {channel.mention}", ephemeral=True)
+
+def build_ticket_panel_view() -> View:
+    view = View(timeout=None)
+    view.add_item(OpenTicketButton())
+    return view
+
+# ========== ПРАВИЛА ==========
+class RulesModal(Modal, title="Правила сервера"):
+    rules_text = TextInput(
+        label="Текст правил",
+        style=discord.TextStyle.paragraph,
+        placeholder="Впиши сюда правила сервера...",
+        max_length=4000,
+        required=True
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        embed = discord.Embed(title="📋 Правила сервера", description=self.rules_text.value, color=discord.Color.orange())
+        embed.set_footer(text="MAKSON Project")
+        await i.channel.send(embed=embed)
+        await i.response.send_message("✅ Правила отправлены!", ephemeral=True)
 
 # ========== КОМАНДЫ ==========
-@bot.tree.command(name="setup_ideas", description="Создать панель для идей")
-async def setup_ideas(i: discord.Interaction):
-    await i.response.defer()
-    if i.user.id != AUTHORIZED_USER_ID and not any(r.id in MOD_ROLE_IDS for r in i.user.roles):
-        await i.followup.send("❌ Нет доступа")
+@bot.tree.command(name="setup_tickets", description="Создать меню тикетов")
+async def setup_tickets(i: discord.Interaction):
+    if not is_mod(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
         return
+    await i.response.defer()
 
     embed = discord.Embed(
-        title="💡 Предложи идею!",
+        title="🎫 Техподдержка MAKSON",
         description=(
-            "Нажми на кнопку ниже, чтобы создать ветку с новой идеей.\n\n"
+            "Нажми на кнопку ниже, чтобы открыть тикет и связаться с поддержкой.\n\n"
             "**Правила**\n"
-            "• Можно предлагать идею раз в 5 минут\n"
-            "• Голосовать можно только 1 раз, но можно менять выбор\n"
-            "• Ветки могут закрыть только администраторы\n\n"
-            "**MAKSON Project**\n"
-            "Будущее проекта строится на идеях его сообщества."
+            "• Один открытый тикет на человека\n"
+            "• Опиши проблему максимально подробно\n"
+            "• Не флуди и жди ответа модератора"
         ),
-        color=discord.Color.blue()
+        color=discord.Color.blurple()
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
 
-    view = View(timeout=None)
-    view.add_item(IdeaButton())
-    view.add_item(AllIdeasButton())
+    await i.followup.send(embed=embed, view=build_ticket_panel_view())
 
-    await i.followup.send(embed=embed, view=view)
+@bot.tree.command(name="send_rules", description="Отправить правила")
+async def send_rules(i: discord.Interaction):
+    if not is_mod(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+    await i.response.send_modal(RulesModal())
+
+@bot.tree.command(name="commands", description="Список команд")
+async def commands_list(i: discord.Interaction):
+    embed = discord.Embed(title="📜 Список команд", color=discord.Color.green())
+    for cmd in bot.tree.get_commands():
+        embed.add_field(name=f"/{cmd.name}", value=cmd.description or "—", inline=False)
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="timeout", description="Выдать тайм-аут")
+@app_commands.describe(user="Кому выдать тайм-аут", minutes="На сколько минут", reason="Причина")
+async def timeout_cmd(i: discord.Interaction, user: discord.Member, minutes: int, reason: str = "Не указана"):
+    if not is_mod(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+    if minutes <= 0 or minutes > 40320:
+        await i.response.send_message("❌ Время должно быть от 1 до 40320 минут (28 дней)", ephemeral=True)
+        return
+    try:
+        await user.timeout(timedelta(minutes=minutes), reason=reason)
+        await i.response.send_message(f"✅ {user.mention} получил тайм-аут на {minutes} мин.\nПричина: {reason}")
+    except discord.Forbidden:
+        await i.response.send_message("❌ Недостаточно прав, чтобы выдать тайм-аут этому пользователю", ephemeral=True)
+    except Exception as e:
+        await i.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+@bot.tree.command(name="toggle_access", description="Забрать/вернуть доступ к командам (только владелец)")
+@app_commands.describe(user="Пользователь")
+async def toggle_access(i: discord.Interaction, user: discord.Member):
+    if i.user.id != AUTHORIZED_USER_ID:
+        await i.response.send_message("❌ Нет прав", ephemeral=True)
+        return
+    if db_is_blocked(user.id):
+        db_unblock_user(user.id)
+        await i.response.send_message(f"✅ Доступ к командам возвращён для {user.mention}", ephemeral=True)
+    else:
+        db_block_user(user.id)
+        await i.response.send_message(f"🚫 Доступ к командам забран у {user.mention}", ephemeral=True)
+
+@bot.tree.command(name="cleanup", description="Удалить осиротевшие голосовые каналы")
+async def cleanup_cmd(i: discord.Interaction):
+    if not is_mod(i.user):
+        await i.response.send_message("❌ Нет доступа", ephemeral=True)
+        return
+
+    if VOICE_CLEANUP_CATEGORY_ID is None:
+        await i.response.send_message(
+            "⚠️ Не настроена категория для очистки — впиши ID категории в VOICE_CLEANUP_CATEGORY_ID в коде.",
+            ephemeral=True
+        )
+        return
+
+    await i.response.defer(ephemeral=True)
+    category = i.guild.get_channel(VOICE_CLEANUP_CATEGORY_ID)
+    if not category or not isinstance(category, discord.CategoryChannel):
+        await i.followup.send("❌ Категория с таким ID не найдена", ephemeral=True)
+        return
+
+    deleted = 0
+    for vc in list(category.voice_channels):
+        if len(vc.members) == 0:
+            try:
+                await vc.delete(reason="Очистка осиротевших голосовых каналов")
+                deleted += 1
+            except Exception:
+                pass
+
+    await i.followup.send(f"✅ Удалено пустых голосовых каналов: {deleted}", ephemeral=True)
 
 @bot.tree.command(name="sync", description="Синхронизация команд (только владелец)")
 async def sync_cmd(i: discord.Interaction):
@@ -365,8 +311,14 @@ async def sync_cmd(i: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} запущен")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="идеи MAKSON"))
-    if not bot.synced:  # ИСПРАВЛЕНО: не синхронизируем команды заново при каждом реконнекте
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="тикеты MAKSON"))
+
+    # Регистрируем "вечные" View заново после каждого рестарта бота,
+    # иначе кнопки в старых сообщениях перестанут отвечать после перезапуска.
+    bot.add_view(build_ticket_panel_view())
+    bot.add_view(build_close_ticket_view())
+
+    if not bot.synced:
         guild = bot.get_guild(GUILD_ID)
         if guild:
             bot.tree.copy_global_to(guild=guild)
