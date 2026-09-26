@@ -24,6 +24,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.synced = False  # ИСПРАВЛЕНО: чтобы не синхронизировать команды при каждом реконнекте
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('ideas.db', check_same_thread=False)
@@ -55,18 +56,22 @@ def db_get_idea(thread_id):
     c.execute("SELECT author_id, author_name, title, description, created_at, votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
     return c.fetchone()
 
+def db_delete_idea(thread_id):  # ИСПРАВЛЕНО: чистим БД при закрытии идеи, чтобы не оставались мёртвые записи
+    c.execute("DELETE FROM ideas WHERE thread_id=?", (str(thread_id),))
+    conn.commit()
+
 def db_add_vote(thread_id, user_id, vote_type):
-    c.execute(f"SELECT votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
+    c.execute("SELECT votes_up, votes_down, voters_up, voters_down FROM ideas WHERE thread_id=?", (str(thread_id),))
     row = c.fetchone()
     if not row:
         return False
     votes_up, votes_down, voters_up, voters_down = row
     voters_up_list = voters_up.split(',') if voters_up else []
     voters_down_list = voters_down.split(',') if voters_down else []
-    
+
     if str(user_id) in voters_up_list or str(user_id) in voters_down_list:
         return False
-    
+
     if vote_type == "up":
         voters_up_list.append(str(user_id))
         c.execute("UPDATE ideas SET votes_up=?, voters_up=? WHERE thread_id=?", (votes_up + 1, ','.join(voters_up_list), str(thread_id)))
@@ -84,7 +89,7 @@ def db_remove_vote(thread_id, user_id):
     votes_up, votes_down, voters_up, voters_down = row
     voters_up_list = voters_up.split(',') if voters_up else []
     voters_down_list = voters_down.split(',') if voters_down else []
-    
+
     if str(user_id) in voters_up_list:
         voters_up_list.remove(str(user_id))
         c.execute("UPDATE ideas SET votes_up=?, voters_up=? WHERE thread_id=?", (votes_up - 1, ','.join(voters_up_list), str(thread_id)))
@@ -134,13 +139,14 @@ threading.Thread(target=lambda: app.run(host='0.0.0.0', port=10000, debug=False,
 
 # ========== ФУНКЦИЯ ОБНОВЛЕНИЯ EMBED ==========
 async def update_idea_embed(thread, thread_id):
+    thread_id = str(thread_id)  # ИСПРАВЛЕНО: раньше сюда мог прилетать int и падало на срезе [:6]
     idea = db_get_idea(thread_id)
     if not idea:
         return
     author_id, author_name, title, description, created_at, votes_up, votes_down, voters_up, voters_down = idea
-    
+
     created_time = datetime.fromisoformat(created_at)
-    
+
     embed = discord.Embed(
         title=f"💡 {title}",
         description=(
@@ -153,19 +159,64 @@ async def update_idea_embed(thread, thread_id):
         color=discord.Color.gold()
     )
     embed.set_footer(text=f"MAKSON Project • ID: {thread_id[:6]}")
-    
+
     view = View(timeout=None)
     view.add_item(VoteUpButton(thread_id))
     view.add_item(VoteDownButton(thread_id))
     view.add_item(UnvoteButton(thread_id))
     view.add_item(CloseIdeaButton(thread_id))
-    
+
     async for msg in thread.history(limit=5):
         if msg.author == bot.user and msg.embeds:
             await msg.edit(embed=embed, view=view)
             return
-    
+
     await thread.send(embed=embed, view=view)
+
+# ========== МОДАЛЬНОЕ ОКНО ИДЕИ ==========
+# ИСПРАВЛЕНО: логика submit'а теперь живёт в самом классе Modal (метод on_submit),
+# а не в несуществующем событии бота on_modal_submit, которое никогда не вызывалось.
+class IdeaModal(Modal, title="Новая идея"):
+    idea_title = TextInput(label="Название идеи", placeholder="Краткое название", required=True, max_length=50)
+    idea_description = TextInput(
+        label="Описание",
+        placeholder="Подробно опиши свою идею",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=500
+    )
+
+    async def on_submit(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True)
+        try:
+            if not db_check_cooldown(i.user.id):
+                await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
+                return
+
+            if i.channel.id != IDEAS_CHANNEL_ID:
+                await i.followup.send("❌ Этот канал не предназначен для идей!", ephemeral=True)
+                return
+
+            try:
+                thread = await i.channel.create_thread(
+                    name=f"💡-{self.idea_title.value[:40]}",
+                    auto_archive_duration=1440,
+                    type=discord.ChannelType.public_thread,
+                    reason=f"Идея от {i.user}"
+                )
+            except Exception as e:
+                await i.followup.send(f"❌ Ошибка создания ветки: {e}", ephemeral=True)
+                return
+
+            db_add_idea(thread.id, i.user.id, i.user.name, self.idea_title.value, self.idea_description.value)
+            db_set_cooldown(i.user.id)
+
+            await update_idea_embed(thread, thread.id)
+
+            await i.followup.send(f"✅ Идея создана: {thread.mention}", ephemeral=True)
+
+        except Exception as e:
+            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
 # ========== КНОПКИ ==========
 class IdeaButton(Button):
@@ -173,21 +224,19 @@ class IdeaButton(Button):
         super().__init__(label="💡 Предложить идею", style=discord.ButtonStyle.primary)
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        # ИСПРАВЛЕНО: раньше здесь стоял defer(), из-за которого send_modal ниже падал
+        # с ошибкой "This interaction has already been responded to before"
         if not db_check_cooldown(i.user.id):
-            await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
+            await i.response.send_message("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
             return
-        modal = Modal(title="Новая идея")
-        modal.add_item(TextInput(label="Название идеи", placeholder="Краткое название", required=True, max_length=50))
-        modal.add_item(TextInput(label="Описание", placeholder="Подробно опиши свою идею", required=True, style=discord.TextStyle.paragraph, max_length=500))
-        await i.response.send_modal(modal)  # Здесь НЕ defer, это особенность модальных окон
+        await i.response.send_modal(IdeaModal())
 
 class AllIdeasButton(Button):
     def __init__(self):
         super().__init__(label="📋 Все идеи", style=discord.ButtonStyle.secondary)
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        await i.response.defer(ephemeral=True)
         ideas = db_get_all_ideas()
         if not ideas:
             await i.followup.send("📭 Пока нет идей. Будь первым!", ephemeral=True)
@@ -213,7 +262,7 @@ class VoteUpButton(Button):
         self.thread_id = thread_id
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        await i.response.defer(ephemeral=True)
         status = db_get_vote_status(self.thread_id, i.user.id)
         if status == "up":
             await i.followup.send("❌ Ты уже голосовал ЗА эту идею", ephemeral=True)
@@ -230,7 +279,7 @@ class VoteDownButton(Button):
         self.thread_id = thread_id
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        await i.response.defer(ephemeral=True)
         status = db_get_vote_status(self.thread_id, i.user.id)
         if status == "down":
             await i.followup.send("❌ Ты уже голосовал ПРОТИВ этой идеи", ephemeral=True)
@@ -247,7 +296,7 @@ class UnvoteButton(Button):
         self.thread_id = thread_id
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        await i.response.defer(ephemeral=True)
         if db_remove_vote(self.thread_id, i.user.id):
             await update_idea_embed(i.channel, self.thread_id)
             await i.followup.send("✅ Голос отменён!", ephemeral=True)
@@ -260,64 +309,25 @@ class CloseIdeaButton(Button):
         self.thread_id = thread_id
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer(ephemeral=True)  # ✅ defer
+        await i.response.defer(ephemeral=True)
         if not any(r.id in MOD_ROLE_IDS for r in i.user.roles) and i.user.id != AUTHORIZED_USER_ID:
             await i.followup.send("❌ Только модераторы", ephemeral=True)
             return
+        db_delete_idea(self.thread_id)  # ИСПРАВЛЕНО: чистим запись из БД, а не оставляем "мёртвую" идею
         await i.followup.send("✅ Идея закрыта", ephemeral=True)
         try:
             await i.channel.delete()
-        except:
-            pass
-
-# ========== ОБРАБОТЧИК МОДАЛЬНОГО ОКНА ==========
-@bot.event
-async def on_modal_submit(i: discord.Interaction):
-    if i.data.get("title") == "Новая идея":
-        await i.response.defer(ephemeral=True)  # ✅ defer
-        
-        try:
-            title = i.data["components"][0]["components"][0]["value"]
-            description = i.data["components"][1]["components"][0]["value"]
-            
-            if not db_check_cooldown(i.user.id):
-                await i.followup.send("⏳ Подожди 5 минут перед следующей идеей!", ephemeral=True)
-                return
-            
-            if i.channel.id != IDEAS_CHANNEL_ID:
-                await i.followup.send("❌ Этот канал не предназначен для идей!", ephemeral=True)
-                return
-            
-            try:
-                thread = await i.channel.create_thread(
-                    name=f"💡-{title[:40]}",
-                    auto_archive_duration=1440,
-                    type=discord.ChannelType.public_thread,
-                    reason=f"Идея от {i.user}"
-                )
-            except Exception as e:
-                await i.followup.send(f"❌ Ошибка создания ветки: {e}", ephemeral=True)
-                return
-            
-            db_add_idea(thread.id, i.user.id, i.user.name, title, description)
-            db_set_cooldown(i.user.id)
-            
-            await update_idea_embed(thread, thread.id)
-            
-            await i.followup.send(f"✅ Идея создана: {thread.mention}", ephemeral=True)
-            
         except Exception as e:
-            await i.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+            print(f"Не удалось удалить тред {self.thread_id}: {e}")
 
 # ========== КОМАНДЫ ==========
-
 @bot.tree.command(name="setup_ideas", description="Создать панель для идей")
 async def setup_ideas(i: discord.Interaction):
-    await i.response.defer()  # ✅ defer
+    await i.response.defer()
     if i.user.id != AUTHORIZED_USER_ID and not any(r.id in MOD_ROLE_IDS for r in i.user.roles):
         await i.followup.send("❌ Нет доступа")
         return
-    
+
     embed = discord.Embed(
         title="💡 Предложи идею!",
         description=(
@@ -332,11 +342,11 @@ async def setup_ideas(i: discord.Interaction):
         color=discord.Color.blue()
     )
     embed.set_footer(text="MAKSON Project • Техподдержка 24/7")
-    
+
     view = View(timeout=None)
     view.add_item(IdeaButton())
     view.add_item(AllIdeasButton())
-    
+
     await i.followup.send(embed=embed, view=view)
 
 @bot.tree.command(name="sync", description="Синхронизация команд (только владелец)")
@@ -344,7 +354,7 @@ async def sync_cmd(i: discord.Interaction):
     if i.user.id != AUTHORIZED_USER_ID:
         await i.response.send_message("❌ Нет прав", ephemeral=True)
         return
-    await i.response.defer(ephemeral=True)  # ✅ defer
+    await i.response.defer(ephemeral=True)
     guild = bot.get_guild(GUILD_ID)
     if guild:
         bot.tree.copy_global_to(guild=guild)
@@ -356,11 +366,13 @@ async def sync_cmd(i: discord.Interaction):
 async def on_ready():
     print(f"✅ {bot.user} запущен")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="идеи MAKSON"))
-    guild = bot.get_guild(GUILD_ID)
-    if guild:
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print("✅ Команды синхронизированы")
+    if not bot.synced:  # ИСПРАВЛЕНО: не синхронизируем команды заново при каждом реконнекте
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            bot.synced = True
+            print("✅ Команды синхронизированы")
 
 if __name__ == "__main__":
     bot.run(TOKEN)
